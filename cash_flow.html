@@ -1,0 +1,1257 @@
+<!DOCTYPE html>
+<html lang="ca">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Simulador de Flux de Caixa</title>
+    
+    <link rel="stylesheet" href="https://pyscript.net/releases/2024.1.1/core.css">
+    <script type="module" src="https://pyscript.net/releases/2024.1.1/core.js"></script>
+    
+    <script src="https://cdn.sheetjs.com/xlsx-0.20.2/package/dist/xlsx.full.min.js"></script>
+	<script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+
+    <script>
+        function switchTab(tabId, btnElement) {
+            document.querySelectorAll('.tab-content').forEach(tab => {
+                tab.style.display = 'none';
+            });
+            document.querySelectorAll('.tab-btn').forEach(btn => {
+                btn.classList.remove('active');
+            });
+            document.getElementById(tabId).style.display = 'block';
+            btnElement.classList.add('active');
+        }
+
+        // --- FUNCIONS DE FORMAT NUMÈRIC ---
+        function formatarNumeroGlobal(num, format) {
+            if (isNaN(num)) return "Error";
+            if (format === 'dos_decimals_eur') {
+                return new Intl.NumberFormat('ca-ES', { minimumFractionDigits: 2, maximumFractionDigits: 2 }).format(num);
+            } else if (format === 'dos_decimals_eng') {
+				return new Intl.NumberFormat('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 }).format(num);
+			}
+            return num.toString().replace('.', ','); 
+        }
+
+        function aplicarFormatGlobal() {
+            const format = document.getElementById('format-global').value;
+            const elements = document.querySelectorAll('.valor-numeric');
+            
+            elements.forEach(el => {
+                const rawVal = parseFloat(el.getAttribute('data-valor'));
+                if (!isNaN(rawVal)) {
+                    el.innerText = formatarNumeroGlobal(rawVal, format);
+                }
+            });
+			
+			generarMatriuFlux()
+        }
+
+        // --- LÒGICA DE LECTURA I ARROSSEGAR ARXIUS ---
+        let arxiuSeleccionat = null;
+
+        function gestionarArxiu(file) {
+            const statusEl = document.getElementById('file-status');
+            const dropZone = document.getElementById('drop-zone');
+            if (!file) return;
+
+            const nom = file.name.toLowerCase();
+            if (!nom.endsWith('.xlsx') && !nom.endsWith('.ods')) {
+                statusEl.innerText = "Error: Format no suportat! L'arxiu ha de ser .xlsx o .ods";
+                statusEl.style.backgroundColor = "#ffcccc";
+                dropZone.style.borderColor = "#cc0000";
+                dropZone.innerText = "Arxiu no vàlid!";
+                arxiuSeleccionat = null;
+                return;
+            }
+
+            arxiuSeleccionat = file;
+            statusEl.innerText = 'Arxiu preparat: ' + file.name;
+            statusEl.style.backgroundColor = '#ccc';
+            
+            // Efecte visual al drop-zone
+            dropZone.innerText = file.name;
+            dropZone.style.borderColor = "#ccc";
+            dropZone.style.fontWeight = "bold";
+            dropZone.style.color = "#000";
+        }
+
+        async function processar_dades() {
+            const statusEl = document.getElementById("file-status");
+            
+            if (!arxiuSeleccionat) {
+                statusEl.innerText = "Error: Primer has de pujar o arrossegar un arxiu!";
+                statusEl.style.backgroundColor = "#ffcccc";
+                return;
+            }
+            
+            try {
+                statusEl.innerText = `Processant ${arxiuSeleccionat.name}...`;
+                statusEl.style.backgroundColor = "#ccc";
+                
+                const arrayBuffer = await arxiuSeleccionat.arrayBuffer();
+                const workbook = XLSX.read(arrayBuffer, { type: 'array', cellDates: true });
+                const firstSheetName = workbook.SheetNames[0];
+                const worksheet = workbook.Sheets[firstSheetName];
+                const dataArray = XLSX.utils.sheet_to_json(worksheet, { header: 1, defval: "" });
+
+				if (dataArray && dataArray.length > 0) {
+					
+					// --- INICI VALIDACIONS ---
+					const headers = dataArray[0];
+					const idxTip = headers.findIndex(h => h && h.toString().toLowerCase().trim() === 'tipologia');
+					const idxData = headers.findIndex(h => h && h.toString().toLowerCase().trim() === 'data');
+					const idxRec = headers.findIndex(h => h && (h.toString().toLowerCase().trim() === 'recurrència' || h.toString().toLowerCase().trim() === 'recurrencia'));
+					
+					let errorsValidacio = [];
+					let dataGlobalSaldo = null;
+					const valorsRecurrencia = ["mensual", "bimensual", "trimestral", "quatrimestral", "semestral", "anual"];
+
+					if (idxTip !== -1) {
+						for (let i = 1; i < dataArray.length; i++) {
+							const fila = dataArray[i];
+							if (fila.every(cell => cell === "" || cell === undefined)) continue; // Saltem les files buides
+							
+							const tipologia = fila[idxTip] ? fila[idxTip].toString().toLowerCase().trim() : "";
+							
+							if (tipologia === 'saldo inicial' && idxData !== -1) {
+								const dataCella = fila[idxData];
+								if (dataCella instanceof Date) {
+									const dataNeta = new Date(dataCella.getTime());
+									dataNeta.setHours(0,0,0,0);
+									
+									if (!dataGlobalSaldo) {
+										dataGlobalSaldo = dataNeta.getTime(); 
+									} else if (dataNeta.getTime() !== dataGlobalSaldo) {
+										if (!errorsValidacio.includes("Tots els moviments de 'Saldo inicial' han de tenir exactament la mateixa data.")) {
+											errorsValidacio.push("Tots els moviments de 'Saldo inicial' han de tenir exactament la mateixa data.");
+										}
+									}
+								}
+							}
+
+							if (tipologia === 'recurrent') {
+								if (idxRec === -1) {
+									if (!errorsValidacio.includes("Falta la columna 'Recurrència' i hi ha moviments recurrents.")) {
+										errorsValidacio.push("Falta la columna 'Recurrència' i hi ha moviments recurrents.");
+									}
+								} else {
+									const recValor = fila[idxRec] ? fila[idxRec].toString().toLowerCase().trim() : "";
+									if (!valorsRecurrencia.includes(recValor)) {
+										errorsValidacio.push(`A la fila Excel ${i + 1}, la recurrència "${recValor || 'està buida'}" no és vàlida. Valors permesos: Mensual, Bimensual, Trimestral, Quatrimestral, Semestral, Anual.`);
+									}
+								}
+							}
+						}
+					}
+
+					if (errorsValidacio.length > 0) {
+						statusEl.innerHTML = `<strong>Error de validació de l'arxiu:</strong><ul style="margin: 5px 0 0 20px; color: #ccc; font-weight: normal;">` + 
+											 errorsValidacio.map(e => `<li>${e}</li>`).join('') + 
+											 `</ul>`;
+						statusEl.style.backgroundColor = "#ffcccc";
+						return; 
+					}
+					// --- FI VALIDACIONS ---
+
+					window.dadesCrues = dataArray; 
+					recalcularDades(); 
+					statusEl.innerText = `Lectura completada: ${arxiuSeleccionat.name} llegit i validat correctament.`;
+					statusEl.style.backgroundColor = "#ccc"; 
+
+				} else {
+                    statusEl.innerText = "Error: No s'han trobat dades a l'arxiu.";
+                    statusEl.style.backgroundColor = "#ffcccc";
+                }
+                
+            } catch (error) {
+                statusEl.innerText = `S'ha produït un error durant la lectura: ${error.message}`;
+                statusEl.style.backgroundColor = "#ffcccc";
+            }
+        }
+
+        function recalcularDades() {
+			if (!window.dadesCrues) return;
+			
+			let dadesClonades = window.dadesCrues.map(fila => [...fila]);
+			const headers = dadesClonades[0];
+			
+			// --- FILTRE D'IMPORTS ---
+			const idxImportFiltre = headers.findIndex(h => h && h.toString().toLowerCase().trim() === 'import');
+			if (idxImportFiltre !== -1) {
+				let filtrades = [headers];
+				for (let i = 1; i < dadesClonades.length; i++) {
+					const fila = dadesClonades[i];
+					if (fila.every(cell => cell === "" || cell === undefined)) continue;
+					
+					const valorImport = fila[idxImportFiltre];
+					if (valorImport !== undefined && valorImport !== "" && valorImport !== null) {
+						filtrades.push(fila);
+					}
+				}
+				dadesClonades = filtrades;
+			}
+			
+			const identificacioActiva = document.getElementById('chk-recurrents').checked;
+			const projeccioActiva = document.getElementById('chk-projecta').checked;
+
+			const idxTip = headers.findIndex(h => h && h.toString().toLowerCase().trim() === 'tipologia');
+			const idxConc = headers.findIndex(h => h && h.toString().toLowerCase().trim() === 'concepte');
+			const idxData = headers.findIndex(h => h && h.toString().toLowerCase().trim() === 'data');
+			const idxRecurrencia = headers.findIndex(h => h && (h.toString().toLowerCase().trim() === 'recurrència' || h.toString().toLowerCase().trim() === 'recurrencia'));
+
+			if (idxTip !== -1 && idxConc !== -1 && idxData !== -1) {
+                
+                // --- 1. BUSQUEM LA DATA BASE (Saldo Inicial) ---
+                let dataBaseSaldos = new Date();
+                let trobatSaldo = false;
+                for (let i = 1; i < dadesClonades.length; i++) {
+                    const fila = dadesClonades[i];
+                    const tip = fila[idxTip] ? fila[idxTip].toString().toLowerCase().trim() : "";
+                    if (tip === 'saldo inicial' && fila[idxData] instanceof Date) {
+                        if (!trobatSaldo || fila[idxData] > dataBaseSaldos) {
+                            dataBaseSaldos = new Date(fila[idxData].getTime());
+                            dataBaseSaldos.setHours(0,0,0,0); // Igualem hores per evitar desajustos
+                            trobatSaldo = true;
+                        }
+                    }
+                }
+
+                // Si no hi ha saldo inicial, agafem la data més recent com a referència
+                if (!trobatSaldo) {
+                    for (let i = 1; i < dadesClonades.length; i++) {
+                        if (dadesClonades[i][idxData] instanceof Date) {
+                            if (dadesClonades[i][idxData] > dataBaseSaldos) {
+                                dataBaseSaldos = new Date(dadesClonades[i][idxData].getTime());
+                            }
+                        }
+                    }
+                }
+
+                // --- 2. CALCULEM L'HORITZÓ TEMPORAL ---
+				let dataHoritzo;
+				const inputDataFiStr = document.getElementById('data-fi-projeccio').value;
+
+				if (inputDataFiStr) {
+					// Si l'usuari ha posat una data manualment, agafem aquesta
+					dataHoritzo = new Date(inputDataFiStr);
+					dataHoritzo.setHours(23, 59, 59, 999); 
+				} else {
+					// Si està en blanc, busquem la data més llunyana dels moviments "Puntual"
+					let maximaDataPuntual = null;
+					
+					for (let i = 1; i < dadesClonades.length; i++) {
+						const fila = dadesClonades[i];
+						const tip = fila[idxTip] ? fila[idxTip].toString().toLowerCase().trim() : "";
+						const dataOriginal = fila[idxData];
+						
+						if (tip === 'puntual' && dataOriginal instanceof Date) {
+							if (!maximaDataPuntual || dataOriginal > maximaDataPuntual) {
+								maximaDataPuntual = new Date(dataOriginal.getTime());
+							}
+						}
+					}
+
+					if (maximaDataPuntual) {
+						// Si hem trobat algun moviment puntual, tallem exactament en aquella data
+						dataHoritzo = new Date(maximaDataPuntual.getTime());
+					} else {
+						// Fallback de seguretat: si no hi ha cap moviment puntual a tot l'Excel, 
+						// projectem fins a final del mes del "Saldo Inicial" com abans
+						dataHoritzo = new Date(dataBaseSaldos.getFullYear(), dataBaseSaldos.getMonth() + 1, 0);
+					}
+					dataHoritzo.setHours(23, 59, 59, 999);
+				}
+
+				let novesFiles = [];
+                let filesNetejades = [headers]; // Aquí guardarem només les files del present i futur
+				
+				for (let i = 1; i < dadesClonades.length; i++) {
+					const fila = dadesClonades[i];
+					if (fila.every(cell => cell === "" || cell === undefined)) continue;
+					
+					const tip = fila[idxTip] ? fila[idxTip].toString().toLowerCase().trim() : "";
+                    const dataOriginal = fila[idxData];
+
+                    // --- NOU: FILTRE DE PASSAT ---
+                    // Si trobem un moviment (que no sigui saldo inicial) i és anterior a la data base, l'amaguem!
+                    let mostraOriginal = true;
+                    if (trobatSaldo && tip !== 'saldo inicial' && dataOriginal instanceof Date) {
+                        let dataNeta = new Date(dataOriginal.getTime());
+                        dataNeta.setHours(0,0,0,0);
+                        if (dataNeta < dataBaseSaldos) {
+                            mostraOriginal = false; // L'amaguem perquè ja està integrat al saldo inicial
+                        }
+                    }
+
+                    // Si és vàlid, l'afegim al llistat final net
+                    if (mostraOriginal) {
+                        let filaAInsertar = [...fila];
+                        if (tip === 'recurrent' && identificacioActiva) {
+                            filaAInsertar[idxConc] = filaAInsertar[idxConc] + " *(Recurrent)*";
+                        }
+                        filesNetejades.push(filaAInsertar);
+                    }
+					
+                    // --- 3. PROJECTEM RECURRÈNCIES (fins i tot les de les files amagades del passat!) ---
+					if (tip === 'recurrent' && projeccioActiva && dataOriginal instanceof Date) {
+                        let interval = 1;
+                        if (idxRecurrencia !== -1) {
+                            const recText = (fila[idxRecurrencia] || "").toString().toLowerCase().trim();
+                            if (recText === "bimensual") interval = 2;
+                            else if (recText === "trimestral") interval = 3;
+                            else if (recText === "quatrimestral") interval = 4;
+                            else if (recText === "semestral") interval = 6;
+                            else if (recText === "anual") interval = 12;
+                        }
+
+                        let k = interval;
+                        while (true) {
+                            let novaData = new Date(dataOriginal.getTime());
+                            
+                            novaData.setMonth(novaData.getMonth() + k);
+                            if (novaData.getDate() !== dataOriginal.getDate()) {
+                                novaData.setDate(0); 
+                            }
+                            novaData.setHours(0,0,0,0);
+
+                            if (novaData > dataHoritzo) {
+                                break;
+                            }
+                            
+                            // NOU: Només l'afegim a la llista si la nova projecció ja passa o iguala el Saldo Inicial
+                            if (!trobatSaldo || novaData >= dataBaseSaldos) {
+                                let novaFila = [...fila];
+                                novaFila[idxData] = novaData;
+                                
+                                if (identificacioActiva) {
+                                    novaFila[idxConc] = novaFila[idxConc].includes("*(Recurrent)*") ? 
+                                        novaFila[idxConc] : novaFila[idxConc] + " *(Recurrent)*";
+                                }
+                                
+                                novesFiles.push(novaFila);
+                            }
+                            k += interval; // Preparem el següent salt
+                        }
+					}
+				}
+                // Fusió final amb les files que han superat el filtre més els futurs generats
+				dadesClonades = filesNetejades.concat(novesFiles);
+			}
+			window.dadesProjectades = dadesClonades; 
+			generarMatriuFlux(); 
+			renderitzar_taula(dadesClonades);
+		}
+
+        function renderitzar_taula(dataOriginal) {
+            const taula = document.getElementById("taula-dades");
+            const formatActiu = document.getElementById('format-global').value;
+            taula.innerHTML = "";
+            
+            if (!dataOriginal || dataOriginal.length === 0) return;
+
+            const headersOriginals = dataOriginal[0];
+
+            // --- PAS: ORDENAR PER DATA (D'ANTIC A NOU) ---
+            const idxData = headersOriginals.findIndex(h => h && h.toString().toLowerCase().trim() === 'data');
+            if (idxData !== -1) {
+                let dadesNues = dataOriginal.slice(1);
+                dadesNues.sort((a, b) => {
+                    const dataA = a[idxData];
+                    const dataB = b[idxData];
+                    const tempsA = (dataA instanceof Date) ? dataA.getTime() : 0;
+                    const tempsB = (dataB instanceof Date) ? dataB.getTime() : 0;
+                    return tempsA - tempsB;
+                });
+                dataOriginal = [headersOriginals, ...dadesNues];
+            }
+
+            const idxBanc = headersOriginals.findIndex(h => h && h.toString().toLowerCase().trim() === 'banc');
+            const idxImport = headersOriginals.findIndex(h => h && h.toString().toLowerCase().trim() === 'import');
+            const idxTipologia = headersOriginals.findIndex(h => h && h.toString().toLowerCase().trim() === 'tipologia');
+            const idxConcepte = headersOriginals.findIndex(h => h && h.toString().toLowerCase().trim() === 'concepte');
+            const idxComentaris = headersOriginals.findIndex(h => h && h.toString().toLowerCase().trim() === 'comentaris (privat)');
+            const idxRecurrencia = headersOriginals.findIndex(h => h && (h.toString().toLowerCase().trim() === 'recurrència' || h.toString().toLowerCase().trim() === 'recurrencia'));
+			const columnesEstandard = [];
+				for (let j = 0; j < headersOriginals.length; j++) {
+					// Comprovem que la capçalera existeixi i no estigui buida
+					if (headersOriginals[j] && headersOriginals[j].toString().trim() !== "") {
+						if (j !== idxBanc && j !== idxImport && j !== idxTipologia && j !== idxComentaris && j !== idxRecurrencia) {
+							columnesEstandard.push({ nom: headersOriginals[j], index: j });
+						}
+					}
+				}
+
+            const crearCella = (valor, esSaldo = false) => {
+                const td = document.createElement("td");
+                if (valor !== undefined && valor !== "" && valor !== null) {
+                    if (valor instanceof Date) {
+                        const dia = String(valor.getDate()).padStart(2, '0');
+                        const mes = String(valor.getMonth() + 1).padStart(2, '0');
+                        const any = valor.getFullYear();
+                        td.innerText = `${dia}/${mes}/${any}`;
+                    } else if (typeof valor === 'number' || (!isNaN(valor) && !isNaN(parseFloat(valor)))) {
+                        const numVal = parseFloat(valor);
+                        const span = document.createElement("span");
+                        span.className = "valor-numeric";
+                        span.setAttribute("data-valor", numVal);
+                        span.innerText = formatarNumeroGlobal(numVal, formatActiu);
+                        
+                        if (numVal < 0 && esSaldo) {
+                            span.style.setProperty("color", "#cc0000", "important"); 
+                        }
+                        
+                        td.appendChild(span);
+                        td.style.textAlign = "right"; 
+                    } else if (typeof valor === 'string' && valor.endsWith("*(Recurrent)*")) {
+                        const textBase = valor.replace(" *(Recurrent)*", "");
+                        td.innerText = textBase + " ";
+                        const em = document.createElement("em");
+                        em.innerText = "(Recurrent)";
+                        td.appendChild(em);
+                    } else {
+                        td.innerText = valor;
+                    }
+                }
+                return td;
+            };
+
+            const thead = document.createElement("thead");
+            const tbody = document.createElement("tbody");
+            let filesValides = 0;
+
+            if (idxBanc !== -1 && idxImport !== -1) {
+                const bancsUnics = new Set();
+                for (let i = 1; i < dataOriginal.length; i++) {
+                    const fila = dataOriginal[i];
+                    if (fila.every(cell => cell === "" || cell === undefined)) continue;
+                    const nomBanc = fila[idxBanc];
+                    if (nomBanc) bancsUnics.add(nomBanc.toString().trim());
+                }
+                const arrayBancs = Array.from(bancsUnics).sort();
+
+                const trTop = document.createElement("tr");
+                const trSub = document.createElement("tr");
+
+                columnesEstandard.forEach(col => {
+                    const th = document.createElement("th");
+                    th.innerText = col.nom;
+                    th.rowSpan = 2;
+                    th.style.verticalAlign = "bottom";
+                    trTop.appendChild(th);
+                });
+
+                arrayBancs.forEach(banc => {
+                    const thBanc = document.createElement("th");
+                    thBanc.innerText = banc;
+                    thBanc.colSpan = 2;
+                    thBanc.style.textAlign = "center";
+                    thBanc.style.borderBottom = "2px solid #999"; 
+                    trTop.appendChild(thBanc);
+
+                    const thImport = document.createElement("th");
+                    thImport.innerText = "Import";
+                    thImport.style.textAlign = "right";
+                    trSub.appendChild(thImport);
+
+                    const thSaldo = document.createElement("th");
+                    thSaldo.innerText = "Saldo";
+                    thSaldo.style.textAlign = "right";
+                    trSub.appendChild(thSaldo);
+                });
+
+                const thGlobal = document.createElement("th");
+                thGlobal.innerText = "Saldo Global";
+                thGlobal.rowSpan = 2;
+                thGlobal.style.verticalAlign = "bottom";
+                thGlobal.style.textAlign = "right";
+                thGlobal.style.borderLeft = "2px solid #666"; 
+                trTop.appendChild(thGlobal);
+
+                thead.appendChild(trTop);
+                thead.appendChild(trSub);
+
+                let saldosInicials = {};
+                arrayBancs.forEach(b => saldosInicials[b] = 0);
+                let filesNormals = [];
+
+                for (let i = 1; i < dataOriginal.length; i++) {
+                    const fila = dataOriginal[i];
+                    if (fila.every(cell => cell === "" || cell === undefined)) continue;
+
+                    const tipologia = idxTipologia !== -1 && fila[idxTipologia] ? fila[idxTipologia].toString().toLowerCase().trim() : "";
+                    const bancActual = fila[idxBanc] ? fila[idxBanc].toString().trim() : "";
+                    const importOriginal = fila[idxImport];
+                    
+                    let importNum = 0;
+                    if (typeof importOriginal === 'number') {
+                        importNum = importOriginal;
+                    } else if (importOriginal) {
+                        let textVal = importOriginal.toString().replace(/\./g, '').replace(',', '.');
+                        importNum = parseFloat(textVal) || 0;
+                    }
+
+                    if (tipologia === 'saldo inicial') {
+                        if (bancActual && saldosInicials[bancActual] !== undefined) {
+                            saldosInicials[bancActual] += importNum;
+                        }
+                    } else {
+                        filesNormals.push({ fila, bancActual, importNum });
+                    }
+                }
+
+                let saldos = { ...saldosInicials };
+                let globalInicial = 0;
+                Object.values(saldosInicials).forEach(val => globalInicial += val);
+
+                const trInicial = document.createElement("tr");
+                trInicial.style.backgroundColor = "#eee"; 
+                trInicial.style.fontWeight = "bold";
+
+                columnesEstandard.forEach(col => {
+                    if (idxConcepte !== -1 && col.index === idxConcepte) {
+                        trInicial.appendChild(crearCella("Saldo inicial"));
+                    } else {
+                        trInicial.appendChild(crearCella("")); 
+                    }
+                });
+
+                arrayBancs.forEach(banc => {
+                    trInicial.appendChild(crearCella("")); 
+                    trInicial.appendChild(crearCella(saldosInicials[banc], true)); 
+                });
+
+                const tdGlobalInic = crearCella(globalInicial, true);
+                tdGlobalInic.style.borderLeft = "2px solid #666";
+                trInicial.appendChild(tdGlobalInic);
+                tbody.appendChild(trInicial);
+
+                for (const item of filesNormals) {
+                    const { fila, bancActual, importNum } = item;
+                    const tr = document.createElement("tr");
+
+                    columnesEstandard.forEach(col => {
+                        tr.appendChild(crearCella(fila[col.index]));
+                    });
+
+                    let sumaGlobal = 0;
+                    arrayBancs.forEach(banc => {
+                        if (banc === bancActual) {
+                            saldos[banc] += importNum;
+                            tr.appendChild(crearCella(importNum));
+                        } else {
+                            tr.appendChild(crearCella(""));
+                        }
+                        tr.appendChild(crearCella(saldos[banc], true));
+                        sumaGlobal += saldos[banc];
+                    });
+
+                    const tdGlobal = crearCella(sumaGlobal, true);
+                    tdGlobal.style.borderLeft = "2px solid #666";
+                    tdGlobal.style.fontWeight = "bold";
+                    tr.appendChild(tdGlobal);
+
+                    tbody.appendChild(tr);
+                    filesValides++;
+                }
+
+            } else {
+                // --- ESTRATÈGIA NORMAL (Amagant columnes de la mateixa manera) ---
+                const trHead = document.createElement("tr");
+                columnesEstandard.forEach(col => {
+                    const th = document.createElement("th");
+                    th.innerText = col.nom;
+                    trHead.appendChild(th);
+                });
+                thead.appendChild(trHead);
+
+                for (let i = 1; i < dataOriginal.length; i++) {
+                    const fila = dataOriginal[i];
+                    if (fila.every(cell => cell === "" || cell === undefined)) continue;
+                    const tr = document.createElement("tr");
+                    columnesEstandard.forEach(col => {
+                        tr.appendChild(crearCella(fila[col.index]));
+                    });
+                    tbody.appendChild(tr);
+                    filesValides++;
+                }
+            }
+
+            taula.appendChild(thead);
+            taula.appendChild(tbody);
+            
+            document.getElementById("row-count").innerText = `Total: ${filesValides} moviments llistats.`;
+        }
+		
+		window.addEventListener('load', function() {
+            // Amaguem la rodeta
+            document.getElementById('loading-overlay').style.display = 'none';
+
+            // Activem els sensors del Drop Zone
+            const dropZone = document.getElementById('drop-zone');
+            
+            dropZone.addEventListener('dragover', (e) => {
+                e.preventDefault();
+                dropZone.style.backgroundColor = "#eef"; // Canvia de color en passar per sobre
+                dropZone.style.borderColor = "#666";
+            });
+
+            dropZone.addEventListener('dragleave', (e) => {
+                e.preventDefault();
+                dropZone.style.backgroundColor = "#fff";
+                dropZone.style.borderColor = "#999";
+            });
+
+            dropZone.addEventListener('drop', (e) => {
+                e.preventDefault();
+                dropZone.style.backgroundColor = "#fff";
+                if (e.dataTransfer.files.length > 0) {
+                    gestionarArxiu(e.dataTransfer.files[0]); // Passem l'arxiu a la nostra funció
+                }
+            });
+        });
+		
+		function toggleSubfiles(grup, rowElement) {
+			const subfiles = document.querySelectorAll(`.subfila-${grup}`);
+			const icona = rowElement.querySelector('.toggle-icon');
+			let estanVisibles = false;
+			
+			if (subfiles.length > 0) {
+				estanVisibles = subfiles[0].style.display !== "none";
+			}
+			
+			subfiles.forEach(sf => {
+				sf.style.display = estanVisibles ? "none" : "table-row";
+			});
+			
+			if (icona) {
+				icona.innerText = estanVisibles ? "▶" : "▼";
+			}
+		}
+				
+		function generarMatriuFlux() {
+			const taulaFlux = document.getElementById("taula-flux");
+			const formatActiu = document.getElementById('format-global').value;
+			const agrupaMensual = document.getElementById('chk-mensual').checked;
+			taulaFlux.innerHTML = "";
+
+			if (!window.dadesProjectades) return;
+
+			const dades = window.dadesProjectades;
+			const headers = dades[0];
+			const idxData = headers.findIndex(h => h && h.toString().toLowerCase().trim() === 'data');
+			const idxImport = headers.findIndex(h => h && h.toString().toLowerCase().trim() === 'import');
+			const idxTipologia = headers.findIndex(h => h && h.toString().toLowerCase().trim() === 'tipologia');
+			const idxConcepte = headers.findIndex(h => h && h.toString().toLowerCase().trim() === 'concepte');
+
+			if (idxData === -1 || idxImport === -1) return;
+
+			let flux = {
+				entrades: { totals: {}, conceptes: {} },
+				sortides: { totals: {}, conceptes: {} }
+			};
+			let periodesSet = new Set();
+			let saldoInicialGlobal = 0;
+
+			// 1. Agrupem dades
+			for (let i = 1; i < dades.length; i++) {
+				const fila = dades[i];
+				const data = fila[idxData];
+				const tipologia = idxTipologia !== -1 && fila[idxTipologia] ? fila[idxTipologia].toString().toLowerCase().trim() : "";
+				const concepte = idxConcepte !== -1 && fila[idxConcepte] ? fila[idxConcepte].toString().trim() : "Altres";
+				
+				// Assegurem que l'import es llegeixi com a número de forma segura
+				let valor = 0;
+				const importOriginal = fila[idxImport];
+				if (typeof importOriginal === 'number') {
+					valor = importOriginal;
+				} else if (importOriginal) {
+					let textVal = importOriginal.toString().replace(/\./g, '').replace(',', '.');
+					valor = parseFloat(textVal) || 0;
+				}
+
+				// Si és el Saldo Inicial base, el sumem a part i saltem la línia
+				if (tipologia === 'saldo inicial') {
+					saldoInicialGlobal += valor;
+					continue; 
+				}
+
+				if (!(data instanceof Date) || valor === 0) continue;
+
+				// Creem la clau del període
+				let clau;
+				if (agrupaMensual) {
+					clau = `${data.getFullYear()}-${String(data.getMonth() + 1).padStart(2, '0')}`;
+				} else {
+					const d = new Date(Date.UTC(data.getFullYear(), data.getMonth(), data.getDate()));
+					d.setUTCDate(d.getUTCDate() + 4 - (d.getUTCDay() || 7));
+					const yearStart = new Date(Date.UTC(d.getUTCFullYear(), 0, 1));
+					const weekNo = Math.ceil((((d - yearStart) / 86400000) + 1) / 7);
+					clau = `${d.getUTCFullYear()}-W${String(weekNo).padStart(2, '0')}`;
+				}
+
+				periodesSet.add(clau);
+				
+				const tipus = valor > 0 ? 'entrades' : 'sortides';
+				
+				// Sumem al total d'entrades/sortides
+				flux[tipus].totals[clau] = (flux[tipus].totals[clau] || 0) + valor;
+				
+				// Sumem al concepte específic per quan ho despleguem
+				if (!flux[tipus].conceptes[concepte]) {
+					flux[tipus].conceptes[concepte] = {};
+				}
+				flux[tipus].conceptes[concepte][clau] = (flux[tipus].conceptes[concepte][clau] || 0) + valor;
+			}
+
+			const periodesSorted = Array.from(periodesSet).sort();
+
+			// 2. Construïm la Taula
+			const thead = document.createElement("thead");
+			const trHead = document.createElement("tr");
+			trHead.appendChild(document.createElement("th")).innerText = "Concepte";
+
+			function formatarCapcalera(clau) {
+				if (agrupaMensual) {
+					const [any, mes] = clau.split('-');
+					const mesos = ['gener', 'febrer', 'març', 'abril', 'maig', 'juny', 'juliol', 'agost', 'setembre', 'octubre', 'novembre', 'desembre'];
+					const nomMes = mesos[parseInt(mes) - 1];
+					return nomMes.charAt(0).toUpperCase() + nomMes.slice(1) + " " + any;
+				} else {
+					const [anyStr, setmanaStr] = clau.split('-W');
+					const any = parseInt(anyStr);
+					const setmana = parseInt(setmanaStr);
+
+					const gener4 = new Date(any, 0, 4);
+					const diaSetmana = gener4.getDay() || 7; 
+					const iniciSetmana = new Date(any, 0, 4 - diaSetmana + 1 + (setmana - 1) * 7);
+					const fiSetmana = new Date(iniciSetmana.getTime() + 6 * 86400000); 
+
+					const formatData = (d) => String(d.getDate()).padStart(2, '0') + '/' + 
+											  String(d.getMonth() + 1).padStart(2, '0') + '/' + 
+											  d.getFullYear();
+					
+					return `Setmana ${setmana}<br><span style="font-weight:normal; font-size:10px; white-space:nowrap;">${formatData(iniciSetmana)} - ${formatData(fiSetmana)}</span>`;
+				}
+			}
+
+			periodesSorted.forEach(p => {
+				const th = document.createElement("th");
+				th.innerHTML = formatarCapcalera(p);
+				th.style.textAlign = "center";
+				th.style.verticalAlign = "bottom";
+				trHead.appendChild(th);
+			});
+			thead.appendChild(trHead);
+			taulaFlux.appendChild(thead);
+
+			const tbody = document.createElement("tbody");
+
+			// 3. Càlcul de fluxos acumulats
+			let saldosInicials = {};
+			let saldosFinals = {};
+			let fluxNet = {};
+			let currentSaldo = saldoInicialGlobal;
+
+			periodesSorted.forEach(p => {
+				saldosInicials[p] = currentSaldo;
+				let net = (flux.entrades.totals[p] || 0) + (flux.sortides.totals[p] || 0);
+				fluxNet[p] = net;
+				currentSaldo += net; // El saldo final d'aquest mes serà l'inicial del següent
+				saldosFinals[p] = currentSaldo;
+			});
+
+			// Funció interna per crear files fàcilment
+			function crearFila(titolHtml, dadesValors, color, esBold, esSubfila = false, idParent = null) {
+				const tr = document.createElement("tr");
+				if (idParent) {
+					tr.className = `subfila-${idParent}`;
+					tr.style.display = "none";
+					tr.style.backgroundColor = "#fcfcfc"; // Color més clar per distingir l'interior
+				}
+
+				const tdNom = document.createElement("td");
+				tdNom.innerHTML = titolHtml;
+				if (esBold) tdNom.style.fontWeight = "bold";
+				if (color) tdNom.style.color = color;
+				if (esSubfila) {
+					tdNom.style.paddingLeft = "25px";
+					tdNom.style.fontStyle = "italic";
+					tdNom.style.fontSize = "11px";
+				}
+				tr.appendChild(tdNom);
+
+				periodesSorted.forEach(p => {
+					const valor = dadesValors[p] || 0;
+					const td = document.createElement("td");
+					
+					// Si és subfila i no té valor en aquell període, ho deixem buit perquè quedi més net
+					if (valor !== 0 || !esSubfila) { 
+						const span = document.createElement("span");
+						span.className = "valor-numeric";
+						span.setAttribute("data-valor", valor);
+						span.innerText = formatarNumeroGlobal(valor, formatActiu);
+						if (valor < 0) span.style.setProperty("color", "#cc0000", "important");
+						td.appendChild(span);
+					}
+					td.style.textAlign = "right";
+					tr.appendChild(td);
+				});
+				return tr;
+			}
+
+			// --- 4. DIBUIX DE LES FILES ---
+
+			// Fila 1: Saldo Inicial
+			const trSaldoInic = crearFila("SALDO INICIAL", saldosInicials, "#000", true);
+			trSaldoInic.style.backgroundColor = "#eee";
+			tbody.appendChild(trSaldoInic);
+
+			// Fila 2: Entrades (Desplegable)
+			const trEntrades = crearFila('<span class="toggle-icon" style="display:inline-block; width:15px;">▶</span> ENTRADES (+)', flux.entrades.totals, "#006600", true);
+			trEntrades.style.cursor = "pointer";
+			trEntrades.onclick = () => toggleSubfiles("entrades", trEntrades);
+			tbody.appendChild(trEntrades);
+
+			// Detalls d'Entrades
+			const conceptesEntrades = Object.keys(flux.entrades.conceptes).sort();
+			conceptesEntrades.forEach(conc => {
+				tbody.appendChild(crearFila("└ " + conc, flux.entrades.conceptes[conc], "#006600", false, true, "entrades"));
+			});
+
+			// Fila 3: Sortides (Desplegable)
+			const trSortides = crearFila('<span class="toggle-icon" style="display:inline-block; width:15px;">▶</span> SORTIDES (-)', flux.sortides.totals, "#cc0000", true);
+			trSortides.style.cursor = "pointer";
+			trSortides.onclick = () => toggleSubfiles("sortides", trSortides);
+			tbody.appendChild(trSortides);
+
+			// Detalls de Sortides
+			const conceptesSortides = Object.keys(flux.sortides.conceptes).sort();
+			conceptesSortides.forEach(conc => {
+				tbody.appendChild(crearFila("└ " + conc, flux.sortides.conceptes[conc], "#cc0000", false, true, "sortides"));
+			});
+
+			// Fila 4: Flux Net del període
+			const trFluxNet = crearFila("FLUX NET DEL PERÍODE", fluxNet, "#000", false);
+			trFluxNet.style.borderTop = "1px dashed #999";
+			tbody.appendChild(trFluxNet);
+
+			// Fila 5: Saldo Final
+			const trSaldoFinal = crearFila("SALDO FINAL", saldosFinals, "#000", true);
+			trSaldoFinal.style.borderTop = "2px solid #666";
+			trSaldoFinal.style.backgroundColor = "#eee";
+			tbody.appendChild(trSaldoFinal);
+
+			taulaFlux.appendChild(tbody);
+			
+			// --- 5. PREPAREM DADES PEL GRÀFIC ---
+			window.dadesGrafic = {
+				labels: periodesSorted.map(p => {
+					if (agrupaMensual) {
+						const [any, mes] = p.split('-');
+						const mesos = ['Gener', 'Febrer', 'Març', 'Abril', 'Maig', 'Juny', 'Juliol', 'Agost', 'Setembre', 'Octubre', 'Novembre', 'Desembre'];
+						return `${mesos[parseInt(mes) - 1]} ${any}`;
+					} else {
+						const [anyStr, setmanaStr] = p.split('-W');
+						const any = parseInt(anyStr);
+						const setmana = parseInt(setmanaStr);
+
+						const gener4 = new Date(any, 0, 4);
+						const diaSetmana = gener4.getDay() || 7; 
+						const iniciSetmana = new Date(any, 0, 4 - diaSetmana + 1 + (setmana - 1) * 7);
+						const fiSetmana = new Date(iniciSetmana.getTime() + 6 * 86400000); 
+
+						const formatData = (d) => String(d.getDate()).padStart(2, '0') + '/' + String(d.getMonth() + 1).padStart(2, '0');
+						
+						// Retornem un array per fer que Chart.js ho pinti en dues línies
+						return [`Setmana ${setmana}`, `${formatData(iniciSetmana)} - ${formatData(fiSetmana)}` ];
+					}
+				}),
+				entrades: periodesSorted.map(p => flux.entrades.totals[p] || 0),
+				sortides: periodesSorted.map(p => flux.sortides.totals[p] || 0), 
+				saldos: periodesSorted.map(p => saldosFinals[p] || 0)
+			};
+			
+			// Si el gràfic ja està obert, l'actualitzem automàticament
+			if (document.getElementById("grafic-container").style.display === "block") {
+				dibuixarGraficFlux();
+			}
+		}
+		
+		function exportarCSVTresoreria() {
+			const taula = document.getElementById("taula-dades");
+			if (!taula || taula.rows.length === 0) {
+				alert("No hi ha dades per exportar.");
+				return;
+			}
+			
+			// Calculem les dimensions reals de la taula
+			let numRows = taula.rows.length;
+			let numCols = 0;
+			for (let j = 0; j < taula.rows[0].cells.length; j++) {
+				numCols += taula.rows[0].cells[j].colSpan || 1;
+			}
+			
+			// Creem una graella (matriu) inicialitzada amb null per diferenciar l'espai verge
+			let matrix = Array(numRows).fill(null).map(() => Array(numCols).fill(null));
+			
+			for (let i = 0; i < numRows; i++) {
+				let row = taula.rows[i];
+				let colOffset = 0; // Punter per saber on col·locar la dada
+				
+				for (let j = 0; j < row.cells.length; j++) {
+					// Busquem el següent forat lliure (null) a la fila actual
+					while (colOffset < numCols && matrix[i][colOffset] !== null) {
+						colOffset++;
+					}
+					
+					let cellText = row.cells[j].innerText.trim().replace(/"/g, '""');
+					let rs = row.cells[j].rowSpan || 1;
+					let cs = row.cells[j].colSpan || 1;
+					
+					// Omplim la matriu ocupant tots els espais
+					for (let r = 0; r < rs; r++) {
+						for (let c = 0; c < cs; c++) {
+							if (i + r < numRows && colOffset + c < numCols) {
+								if (r === 0 && c === 0) {
+									matrix[i + r][colOffset + c] = '"' + cellText + '"'; // Dada real
+								} else {
+									matrix[i + r][colOffset + c] = '""'; // Cel·la "fantasma" ocupada per la fusió
+								}
+							}
+						}
+					}
+					colOffset += cs; // Avancem el punter
+				}
+			}
+			
+			// Construïm el CSV
+			let csvContent = "\uFEFF"; 
+			for (let i = 0; i < numRows; i++) {
+				// Transformem els possibles 'nulls' que hagin quedat solts a espais buits
+				let rowArray = matrix[i].map(val => val === null ? '""' : val);
+				csvContent += rowArray.join(";") + "\r\n";
+			}
+			
+			// Creem l'arxiu i el descarreguem
+			const blob = new Blob([csvContent], { type: 'text/csv;charset=utf-8;' });
+			const link = document.createElement("a");
+			link.href = URL.createObjectURL(blob);
+			link.download = "previsio_tresoreria.csv";
+			document.body.appendChild(link);
+			link.click();
+			document.body.removeChild(link);
+		}
+		
+		function exportarCSVFlux() {
+			const taula = document.getElementById("taula-flux");
+			if (!taula || taula.rows.length === 0) {
+				alert("No hi ha dades per exportar.");
+				return;
+			}
+
+			let csvContent = "\uFEFF"; // Forcem UTF-8 per als accents
+			
+			for (let i = 0; i < taula.rows.length; i++) {
+				let row = taula.rows[i];
+				let rowData = [];
+				
+				for (let j = 0; j < row.cells.length; j++) {
+					// Fem servir textContent per capturar també les files que estiguin col·lapsades
+					let cellText = row.cells[j].textContent;
+					
+					// Netejem: traiem les fletxetes, convertim salts de línia en espais, traiem espais extres i escapem cometes
+					cellText = cellText.replace(/[▶▼]/g, '')
+									   .replace(/\n/g, ' ')
+									   .replace(/\s+/g, ' ')
+									   .trim()
+									   .replace(/"/g, '""');
+					
+					rowData.push('"' + cellText + '"');
+				}
+				
+				// Unim amb punt i coma
+				csvContent += rowData.join(";") + "\r\n";
+			}
+			
+			// Creem l'arxiu i el descarreguem
+			const blob = new Blob([csvContent], { type: 'text/csv;charset=utf-8;' });
+			const link = document.createElement("a");
+			link.href = URL.createObjectURL(blob);
+			link.download = "flux_de_caixa.csv";
+			document.body.appendChild(link);
+			link.click();
+			document.body.removeChild(link);
+		}
+		
+		let chartFluxInstance = null;
+
+		function dibuixarGraficFlux() {
+			if (!window.dadesGrafic) {
+				alert("Encara no hi ha dades per dibuixar el gràfic.");
+				return;
+			}
+
+			document.getElementById("grafic-container").style.display = "block";
+			const ctx = document.getElementById("canvas-flux").getContext("2d");
+
+			// Destruïm el gràfic anterior si n'hi ha un per no encavalcar-los
+			if (chartFluxInstance) {
+				chartFluxInstance.destroy(); 
+			}
+
+			chartFluxInstance = new Chart(ctx, {
+				type: 'bar',
+				data: {
+					labels: window.dadesGrafic.labels,
+					datasets: [
+						{
+							label: 'Evolució Saldo Final',
+							type: 'line',
+							data: window.dadesGrafic.saldos,
+							borderColor: '#0055ff', // Línia Blava
+							backgroundColor: '#0055ff',
+							borderWidth: 2,
+							fill: false,
+							yAxisID: 'y-saldo',
+							tension: 0.1,
+							order: 1 // Força que la línia es dibuixi per sobre de les barres
+						},
+						{
+							label: 'Entrades (+)',
+							type: 'bar',
+							data: window.dadesGrafic.entrades,
+							backgroundColor: '#006600', // Barres Verdes
+							yAxisID: 'y-flux',
+							order: 2
+						},
+						{
+							label: 'Sortides (-)',
+							type: 'bar',
+							data: window.dadesGrafic.sortides,
+							backgroundColor: '#cc0000', // Barres Vermelles
+							yAxisID: 'y-flux',
+							order: 3
+						}
+					]
+				},
+				options: {
+					responsive: true,
+					interaction: {
+						mode: 'index',
+						intersect: false,
+					},
+					plugins: {
+						tooltip: {
+							callbacks: {
+								label: function(context) {
+									let label = context.dataset.label || '';
+									if (label) label += ': ';
+									if (context.parsed.y !== null) {
+										// Mostrem el tooltip formatat com a moneda
+										label += new Intl.NumberFormat('ca-ES', { style: 'currency', currency: 'EUR' }).format(context.parsed.y);
+									}
+									return label;
+								}
+							}
+						}
+					},
+					scales: {
+						x: {
+							stacked: true, // <--- Afegeix això perquè s'apilin a l'eix X
+							ticks: {
+								maxRotation: 0,
+								autoSkip: true,
+								font: { size: 10 }
+							}
+						},
+						'y-flux': {
+							type: 'linear',
+							position: 'left',
+							stacked: true, // <--- Afegeix això perquè s'apilin a l'eix Y de les barres
+							title: { display: true, text: 'Volum (Entrades / Sortides)' }
+						},
+						'y-saldo': {
+							type: 'linear',
+							position: 'right',
+							stacked: false, // La línia del saldo NO s'ha d'apilar
+							title: { display: true, text: 'Saldo Final acumulat' },
+							grid: { drawOnChartArea: false }
+						}
+					}
+				}
+			});
+			
+			// Fem scroll suau cap al gràfic automàticament
+			document.getElementById("grafic-container").scrollIntoView({ behavior: 'smooth', block: 'end' });
+		}
+
+    </script>
+	
+    <style>
+        * { font-family: Verdana, Arial, sans-serif !important; color: #000 !important; }
+
+        body { background-color: #ccc; margin: 0; padding: 0; font-size: 12px; }
+        .tool-container { padding: 10px; max-width: 950px; margin: 0 auto; }
+        .card { border: 2px solid; border-color: #fff #666 #666 #fff; padding: 15px; margin-top: 10px; background: #eee; }
+        h1 { font-size: 1.4em; border-bottom: 2px groove #fff; padding-bottom: 5px; margin-bottom: 15px; text-align: left; font-weight: bold; }
+
+        .tabs-nav { border-bottom: 1px solid #fff; padding: 10px 10px 0 10px; background-color: #ccc; }
+        .tab-btn { background-color: #ddd; border: 2px solid; border-color: #fff #666 #666 #fff; border-bottom: none; padding: 6px 12px; cursor: pointer; text-decoration: none; margin-bottom: -1px; display: inline-flex; flex-direction: column; align-items: center; }
+		.tab-btn::after {content: attr(data-text); font-weight: bold; height: 0; visibility: hidden; overflow: hidden; }
+        .tab-btn:hover { background-color: #eee; }
+        .tab-btn.active { background-color: #eee; font-weight: bold; border-color: #fff #666 #eee #fff; }
+        .tab-content { display: none; }
+
+        label { display: block; font-weight: bold; margin-bottom: 3px; font-size: 12px; }
+        
+        /* Ajustos als inputs originals */
+        input, textarea, select { border: 2px solid; border-color: #666 #fff #fff #666; padding: 4px; box-sizing: border-box; background: #fff; border-radius: 0; }
+        input[type="text"], input[type="url"], input[type="number"], select { height: 25px; }
+        input:focus, textarea:focus, select:focus { outline: 1px dotted #000; }
+        
+        select { padding-top: 0 !important; padding-bottom: 0 !important; font-size: 11px !important; }
+
+        button { background-color: #ddd; border: 2px solid; border-color: #fff #666 #666 #fff; padding: 5px 10px; cursor: pointer; }
+        button:active { border-color: #666 #fff #fff #666; }
+        .btn-main { font-weight: bold; padding: 0 15px; width: auto;}
+		.btn-secondary { width: auto; font-weight: normal; margin: 2px; }
+        
+        .top-controls { display: flex; gap: 15px; margin-bottom: 15px; align-items: flex-end; }
+        .control-group { flex: 1; }
+        
+        .file-display { border: 2px solid; border-color: #666 #fff #fff #666; background-color: #fff; padding: 10px; margin-top: 15px; font-weight: bold;}
+        .res-sepia { border: 2px solid; border-color: #666 #fff #fff #666; background-color: #fff; padding: 10px; margin-top: 15px; }
+        
+        .table-wrapper { overflow-x: auto; border: 2px solid; border-color: #666 #fff #fff #666; margin-top: 10px; max-height: 400px;}
+        table.data-table { width: 100%; border-collapse: collapse; background: #fff; border: none; }
+        .data-table th, .data-table td { border: 1px solid #ccc; padding: 6px; text-align: left; }
+        .data-table th { background-color: #ddd; font-weight: bold; border-bottom: 2px solid #999; border-right: 1px solid #999; position: sticky; top: 0;}
+
+        #loading-overlay { position: fixed; top: 0; left: 0; width: 100%; height: 100%; background-color: rgba(204, 204, 204, 0.95); z-index: 9999; display: flex; flex-direction: column; justify-content: center; align-items: center; text-align: center; }
+        .spinner { border: 8px solid #fff; border-top: 8px solid #666; border-radius: 50%; width: 60px; height: 60px; animation: spin 1s linear infinite; margin-bottom: 20px; }
+        @keyframes spin { 0% { transform: rotate(0deg); } 100% { transform: rotate(360deg); } }
+        .loading-text { font-size: 1.5em; font-weight: bold; background: #eee; border: 2px solid; border-color: #fff #666 #666 #fff; padding: 10px 20px; max-width: 80%; }
+    </style>
+</head>
+<body>
+
+    <div id="loading-overlay">
+        <div class="spinner"></div>
+        <div class="loading-text">
+            <span>Carregant l'eina...</span>
+        </div>
+    </div>
+
+    <div class="tabs-nav" style="display: flex; justify-content: space-between; align-items: flex-end;">
+		<div style="display: flex; flex-wrap: wrap; gap: 2px;">
+            <button class="tab-btn active" data-text="Càrrega de Dades" onclick="switchTab('tab-carrega', this)">Càrrega de Dades</button>
+			<button class="tab-btn" data-text="Previsió de Tresoreria" onclick="switchTab('tab-tresoreria', this)">Previsió de Tresoreria</button>
+			<button class="tab-btn" data-text="Flux de Caixa" onclick="switchTab('tab-flux-caixa', this)">Flux de Caixa</button>
+		</div>
+        
+        <div style="padding-bottom: 5px; padding-right: 10px; display: flex; flex-direction: column; align-items: flex-end; gap: 6px;">
+            <div style="font-size: 10px; text-align: right; line-height: 1.2;">
+                Creat per David Vidal Viladoms + Gemini<br>
+                En construcció
+            </div>
+            <div style="display: flex; align-items: center; gap: 10px; white-space: nowrap;">
+                <label for="format-global" style="margin: 0; font-weight: bold; white-space: nowrap;">Format numèric:</label>
+                <select id="format-global" class="input-verd" style="width: auto; padding: 4px;" onchange="aplicarFormatGlobal()">
+                    <option value="dos_decimals_eur">Dos decimals (1.234,56)</option>
+                    <option value="dos_decimals_eng">Dos decimals (1,234.56)</option>
+                    <option value="general">General</option>
+                </select>
+            </div>
+        </div>
+    </div>
+
+    <div id="tab-carrega" class="tab-content" style="display:block;">
+        <div class="tool-container">
+            <div class="card">
+                <h1>Càrrega de Dades</h1>
+                
+                <div class="top-controls" style="align-items: center; display: flex; gap: 15px; width: 100%;">
+					<div id="file-input-container" style="display: flex; flex: 1;">
+						<input type="file" id="file-input" accept=".xlsx, .ods" style="display:none;" onchange="if(this.files.length > 0) gestionarArxiu(this.files[0])"/>
+						
+						<div id="drop-zone" style="border: 2px dashed #999; padding: 0 15px; height: 38px; display: flex; align-items: center; justify-content: center; background: #fff; cursor: pointer; font-size: 12px; color: #666; flex: 1; box-sizing: border-box;" onclick="document.getElementById('file-input').click()">
+							Fes clic o arrossega l'arxiu Excel o LibreOffice aquí...
+						</div>
+					</div>
+
+					<div style="flex: 1; display: flex;">
+						<button id="read-btn" onclick="processar_dades()" class="btn-main" style="margin: 0; height: 38px; width: 100%; font-size: 13px; box-sizing: border-box;">Llegeix les dades</button>
+					</div>
+				</div>
+                
+                <div id="file-status" class="file-display">Esperant dades...</div>
+            </div>
+        </div>
+    </div>
+
+    <div id="tab-tresoreria" class="tab-content">
+        <div class="tool-container">
+            <div class="card">
+                <h1>Simulador de Tresoreria</h1>
+
+                <div id="resultats-box" class="res-sepia">
+                    <h3 style="margin-top:0; border-bottom: 1px dotted #999; padding-bottom: 5px;">Previsió de tresoreria</h3>
+                    <div id="controls-recurrencia" style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 15px; background: #f9f9f9; padding: 10px; border: 1px dotted #999;">
+						<div style="display: flex; gap: 20px; align-items: center;">
+							<label style="margin: 0; display: flex; align-items: center; gap: 5px; cursor: pointer;">
+								<input type="checkbox" id="chk-recurrents" checked onchange="recalcularDades()" style="width: auto; margin: 0;">
+								Identifica recurrents
+							</label>
+
+							<div style="display: flex; align-items: center; gap: 10px; border-left: 1px solid #ccc; padding-left: 15px;">
+								<label style="margin: 0; display: flex; align-items: center; gap: 5px; cursor: pointer;">
+									<input type="checkbox" id="chk-projecta" checked onchange="recalcularDades()" style="width: auto; margin: 0;">
+									Projecta recurrència fins:
+								</label>
+								<input type="date" id="data-fi-projeccio" onchange="recalcularDades()" style="width: auto; text-align: center;">
+							</div>
+						</div>
+						
+						<button class="btn-secondary" onclick="exportarCSVTresoreria()">Baixa la previsió (.csv)</button>
+					</div>
+					<div class="table-wrapper">
+                        <table id="taula-dades" class="data-table"></table>
+                    </div>
+                    <div id="row-count" style="margin-top: 10px; text-align: right; font-weight: bold;"></div>
+                </div>
+            </div>
+        </div>
+    </div>
+	
+    <div id="tab-flux-caixa" class="tab-content">
+		<div class="tool-container">
+			<div class="card">
+				<h1>Flux de Caixa</h1>
+				<div id="controls-flux" style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 15px; background: #f9f9f9; padding: 10px; border: 1px dotted #999;">
+					<label style="margin: 0; display: flex; align-items: center; gap: 5px; cursor: pointer;">
+						<input type="checkbox" id="chk-mensual" onchange="generarMatriuFlux()"> 
+						Agrupa mensualment (per defecte: setmanal)
+					</label>
+					<button class="btn-secondary" onclick="exportarCSVFlux()">Baixa el flux (.csv)</button>
+				</div>
+				<div class="table-wrapper">
+					<table id="taula-flux" class="data-table"></table>
+				</div>
+				<div style="margin-top: 20px; border-top: 2px groove #fff; padding-top: 15px; text-align: center;">
+					<button class="btn-main" 
+							onclick="dibuixarGraficFlux()" 
+							style="height: 45px; padding: 0 30px; width: auto; font-size: 14px;">
+						Dibuixa gràfic del flux de caixa
+					</button>
+				</div>
+				<div id="grafic-container" style="display: none; margin-top: 15px; background: #fff; border: 2px solid #666; padding: 10px;">
+					<canvas id="canvas-flux"></canvas>
+				</div>
+			</div>
+		</div>
+	</div>
+	
+</body>
+</html>
