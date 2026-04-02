@@ -60,7 +60,7 @@
             const nom = file.name.toLowerCase();
             if (!nom.endsWith('.xlsx') && !nom.endsWith('.ods')) {
                 statusEl.innerText = "Error: Format no suportat! L'arxiu ha de ser .xlsx o .ods";
-                statusEl.style.backgroundColor = "#ffcccc";
+                statusEl.style.backgroundColor = "#ccc";
                 dropZone.style.borderColor = "#cc0000";
                 dropZone.innerText = "Arxiu no vàlid!";
                 arxiuSeleccionat = null;
@@ -82,8 +82,8 @@
             const statusEl = document.getElementById("file-status");
             
             if (!arxiuSeleccionat) {
-                statusEl.innerText = "Error: Primer has de pujar o arrossegar un arxiu!";
-                statusEl.style.backgroundColor = "#ffcccc";
+                statusEl.innerHTML = 'Error: Primer has de pujar o arrossegar un arxiu! Pots baixar la <a href="cash_flow.ods" download style="color: #0055ff !important; text-decoration: underline;">plantilla</a> per crear un nou fitxer.';
+                statusEl.style.backgroundColor = "#ccc";
                 return;
             }
             
@@ -151,7 +151,7 @@
 						statusEl.innerHTML = `<strong>Error de validació de l'arxiu:</strong><ul style="margin: 5px 0 0 20px; color: #ccc; font-weight: normal;">` + 
 											 errorsValidacio.map(e => `<li>${e}</li>`).join('') + 
 											 `</ul>`;
-						statusEl.style.backgroundColor = "#ffcccc";
+						statusEl.style.backgroundColor = "#ccc";
 						return; 
 					}
 					// --- FI VALIDACIONS ---
@@ -163,12 +163,12 @@
 
 				} else {
                     statusEl.innerText = "Error: No s'han trobat dades a l'arxiu.";
-                    statusEl.style.backgroundColor = "#ffcccc";
+                    statusEl.style.backgroundColor = "#ccc";
                 }
                 
             } catch (error) {
                 statusEl.innerText = `S'ha produït un error durant la lectura: ${error.message}`;
-                statusEl.style.backgroundColor = "#ffcccc";
+                statusEl.style.backgroundColor = "#ccc";
             }
         }
 
@@ -1155,7 +1155,7 @@
         <div style="padding-bottom: 5px; padding-right: 10px; display: flex; flex-direction: column; align-items: flex-end; gap: 6px;">
             <div style="font-size: 10px; text-align: right; line-height: 1.2;">
                 Creat per David Vidal Viladoms + Gemini<br>
-                Versió 260401
+                Versió 260402
             </div>
             <div style="display: flex; align-items: center; gap: 10px; white-space: nowrap;">
                 <label for="format-global" style="margin: 0; font-weight: bold; white-space: nowrap;">Format numèric:</label>
@@ -1187,7 +1187,7 @@
 					</div>
 				</div>
                 
-                <div id="file-status" class="file-display">Esperant dades...</div>
+				<div id="file-status" class="file-display">Esperant dades... Pots baixar la <a href="cash_flow.ods" download style="color: #0055ff !important; text-decoration: underline;">plantilla</a> per crear un nou fitxer.</div>
             </div>
         </div>
     </div>
