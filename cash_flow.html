@@ -61,7 +61,7 @@
             if (!nom.endsWith('.xlsx') && !nom.endsWith('.ods')) {
                 statusEl.innerText = "Error: Format no suportat! L'arxiu ha de ser .xlsx o .ods";
                 statusEl.style.backgroundColor = "#ccc";
-                dropZone.style.borderColor = "#cc0000";
+                dropZone.style.borderColor = "#ccc";
                 dropZone.innerText = "Arxiu no vàlid!";
                 arxiuSeleccionat = null;
                 return;
@@ -201,6 +201,7 @@
 			const idxConc = headers.findIndex(h => h && h.toString().toLowerCase().trim() === 'concepte');
 			const idxData = headers.findIndex(h => h && h.toString().toLowerCase().trim() === 'data');
 			const idxRecurrencia = headers.findIndex(h => h && (h.toString().toLowerCase().trim() === 'recurrència' || h.toString().toLowerCase().trim() === 'recurrencia'));
+			const idxFiRec = headers.findIndex(h => h && (h.toString().toLowerCase().trim() === 'fi recurrència' || h.toString().toLowerCase().trim() === 'fi recurrencia'));
 
 			if (idxTip !== -1 && idxConc !== -1 && idxData !== -1) {
                 
@@ -297,29 +298,45 @@
 					
                     // --- 3. PROJECTEM RECURRÈNCIES (fins i tot les de les files amagades del passat!) ---
 					if (tip === 'recurrent' && projeccioActiva && dataOriginal instanceof Date) {
-                        let interval = 1;
-                        if (idxRecurrencia !== -1) {
-                            const recText = (fila[idxRecurrencia] || "").toString().toLowerCase().trim();
-                            if (recText === "bimensual") interval = 2;
-                            else if (recText === "trimestral") interval = 3;
-                            else if (recText === "quatrimestral") interval = 4;
-                            else if (recText === "semestral") interval = 6;
-                            else if (recText === "anual") interval = 12;
-                        }
+						
+						// NOU: Llegim la "Fi recurrència" si existeix i és una data vàlida
+						let limitRecurrencia = null;
+						if (idxFiRec !== -1) {
+							const cellFi = fila[idxFiRec];
+							if (cellFi instanceof Date) {
+								limitRecurrencia = new Date(cellFi.getTime());
+								limitRecurrencia.setHours(23, 59, 59, 999); // Ho fixem a última hora del dia
+							}
+						}
 
-                        let k = interval;
-                        while (true) {
-                            let novaData = new Date(dataOriginal.getTime());
-                            
-                            novaData.setMonth(novaData.getMonth() + k);
-                            if (novaData.getDate() !== dataOriginal.getDate()) {
-                                novaData.setDate(0); 
-                            }
-                            novaData.setHours(0,0,0,0);
+						let interval = 1;
+						if (idxRecurrencia !== -1) {
+							const recText = (fila[idxRecurrencia] || "").toString().toLowerCase().trim();
+							if (recText === "bimensual") interval = 2;
+							else if (recText === "trimestral") interval = 3;
+							else if (recText === "quatrimestral") interval = 4;
+							else if (recText === "semestral") interval = 6;
+							else if (recText === "anual") interval = 12;
+						}
 
-                            if (novaData > dataHoritzo) {
-                                break;
-                            }
+						let k = interval;
+						while (true) {
+								let novaData = new Date(dataOriginal.getTime());
+								
+								novaData.setMonth(novaData.getMonth() + k);
+								if (novaData.getDate() !== dataOriginal.getDate()) {
+									novaData.setDate(0); 
+								}
+								novaData.setHours(0,0,0,0);
+
+								if (novaData > dataHoritzo) {
+									break;
+								}
+								
+								// --- NOU: Aturem la projecció si supera la data "Fi recurrència" ---
+								if (limitRecurrencia && novaData > limitRecurrencia) {
+									break;
+								}
                             
                             // NOU: Només l'afegim a la llista si la nova projecció ja passa o iguala el Saldo Inicial
                             if (!trobatSaldo || novaData >= dataBaseSaldos) {
@@ -374,11 +391,13 @@
             const idxConcepte = headersOriginals.findIndex(h => h && h.toString().toLowerCase().trim() === 'concepte');
             const idxComentaris = headersOriginals.findIndex(h => h && h.toString().toLowerCase().trim() === 'comentaris (privat)');
             const idxRecurrencia = headersOriginals.findIndex(h => h && (h.toString().toLowerCase().trim() === 'recurrència' || h.toString().toLowerCase().trim() === 'recurrencia'));
+			
 			const columnesEstandard = [];
+            const columnesPermeses = ['data', 'concepte', 'comentaris']; 
 				for (let j = 0; j < headersOriginals.length; j++) {
-					// Comprovem que la capçalera existeixi i no estigui buida
 					if (headersOriginals[j] && headersOriginals[j].toString().trim() !== "") {
-						if (j !== idxBanc && j !== idxImport && j !== idxTipologia && j !== idxComentaris && j !== idxRecurrencia) {
+						const nomColumna = headersOriginals[j].toString().toLowerCase().trim();
+						if (columnesPermeses.includes(nomColumna)) {
 							columnesEstandard.push({ nom: headersOriginals[j], index: j });
 						}
 					}
@@ -645,6 +664,8 @@
 			const idxImport = headers.findIndex(h => h && h.toString().toLowerCase().trim() === 'import');
 			const idxTipologia = headers.findIndex(h => h && h.toString().toLowerCase().trim() === 'tipologia');
 			const idxConcepte = headers.findIndex(h => h && h.toString().toLowerCase().trim() === 'concepte');
+			// NOU: Busquem la columna del Banc
+			const idxBanc = headers.findIndex(h => h && h.toString().toLowerCase().trim() === 'banc');
 
 			if (idxData === -1 || idxImport === -1) return;
 
@@ -653,7 +674,12 @@
 				sortides: { totals: {}, conceptes: {} }
 			};
 			let periodesSet = new Set();
+			
 			let saldoInicialGlobal = 0;
+			// NOVES ESTRUCTURES PER ALS BANCS:
+			let saldosBancsInicialsGlobal = {};
+			let fluxNetBancs = {};
+			let bancsUnics = new Set();
 
 			// 1. Agrupem dades
 			for (let i = 1; i < dades.length; i++) {
@@ -661,8 +687,10 @@
 				const data = fila[idxData];
 				const tipologia = idxTipologia !== -1 && fila[idxTipologia] ? fila[idxTipologia].toString().toLowerCase().trim() : "";
 				const concepte = idxConcepte !== -1 && fila[idxConcepte] ? fila[idxConcepte].toString().trim() : "Altres";
+				const bancActual = idxBanc !== -1 && fila[idxBanc] ? fila[idxBanc].toString().trim() : "Sense banc";
 				
-				// Assegurem que l'import es llegeixi com a número de forma segura
+				if (bancActual && tipologia !== 'saldo inicial') bancsUnics.add(bancActual);
+
 				let valor = 0;
 				const importOriginal = fila[idxImport];
 				if (typeof importOriginal === 'number') {
@@ -672,15 +700,16 @@
 					valor = parseFloat(textVal) || 0;
 				}
 
-				// Si és el Saldo Inicial base, el sumem a part i saltem la línia
+				// SALDO INICIAL (Separat per bancs)
 				if (tipologia === 'saldo inicial') {
 					saldoInicialGlobal += valor;
+					if (bancActual) bancsUnics.add(bancActual);
+					saldosBancsInicialsGlobal[bancActual] = (saldosBancsInicialsGlobal[bancActual] || 0) + valor;
 					continue; 
 				}
 
 				if (!(data instanceof Date) || valor === 0) continue;
 
-				// Creem la clau del període
 				let clau;
 				if (agrupaMensual) {
 					clau = `${data.getFullYear()}-${String(data.getMonth() + 1).padStart(2, '0')}`;
@@ -695,18 +724,20 @@
 				periodesSet.add(clau);
 				
 				const tipus = valor > 0 ? 'entrades' : 'sortides';
-				
-				// Sumem al total d'entrades/sortides
 				flux[tipus].totals[clau] = (flux[tipus].totals[clau] || 0) + valor;
 				
-				// Sumem al concepte específic per quan ho despleguem
 				if (!flux[tipus].conceptes[concepte]) {
 					flux[tipus].conceptes[concepte] = {};
 				}
 				flux[tipus].conceptes[concepte][clau] = (flux[tipus].conceptes[concepte][clau] || 0) + valor;
+
+				// CALCULEM EL FLUX NET PER A CADA BANC EN AQUEST PERÍODE
+				if (!fluxNetBancs[bancActual]) fluxNetBancs[bancActual] = {};
+				fluxNetBancs[bancActual][clau] = (fluxNetBancs[bancActual][clau] || 0) + valor;
 			}
 
 			const periodesSorted = Array.from(periodesSet).sort();
+			const arrayBancs = Array.from(bancsUnics).sort();
 
 			// 2. Construïm la Taula
 			const thead = document.createElement("thead");
@@ -733,7 +764,7 @@
 											  String(d.getMonth() + 1).padStart(2, '0') + '/' + 
 											  d.getFullYear();
 					
-					return `Setmana ${setmana}<br><span style="font-weight:normal; font-size:10px; white-space:nowrap;">${formatData(iniciSetmana)} - ${formatData(fiSetmana)}</span>`;
+					return `Setmana ${setmana} <br><span style="font-weight:normal; font-size:10px; white-space:nowrap;">${formatData(iniciSetmana)} - ${formatData(fiSetmana)}</span>`;
 				}
 			}
 
@@ -749,27 +780,47 @@
 
 			const tbody = document.createElement("tbody");
 
-			// 3. Càlcul de fluxos acumulats
+			// 3. Càlcul de fluxos acumulats GLOBALS I PER BANC
 			let saldosInicials = {};
 			let saldosFinals = {};
 			let fluxNet = {};
 			let currentSaldo = saldoInicialGlobal;
+			
+			let saldosInicialsBancs = {};
+			let saldosFinalsBancs = {};
+			arrayBancs.forEach(b => {
+				saldosInicialsBancs[b] = {};
+				saldosFinalsBancs[b] = {};
+			});
+			let currentSaldoBancs = { ...saldosBancsInicialsGlobal };
 
 			periodesSorted.forEach(p => {
 				saldosInicials[p] = currentSaldo;
+				
+				// Calculem el saldo per a cada banc específic
+				arrayBancs.forEach(b => {
+					let sInicBanc = currentSaldoBancs[b] || 0;
+					saldosInicialsBancs[b][p] = sInicBanc;
+					
+					let netBanc = fluxNetBancs[b] && fluxNetBancs[b][p] ? fluxNetBancs[b][p] : 0;
+					let sFinBanc = sInicBanc + netBanc;
+					
+					currentSaldoBancs[b] = sFinBanc;
+					saldosFinalsBancs[b][p] = sFinBanc;
+				});
+
 				let net = (flux.entrades.totals[p] || 0) + (flux.sortides.totals[p] || 0);
 				fluxNet[p] = net;
-				currentSaldo += net; // El saldo final d'aquest mes serà l'inicial del següent
+				currentSaldo += net; 
 				saldosFinals[p] = currentSaldo;
 			});
 
-			// Funció interna per crear files fàcilment
 			function crearFila(titolHtml, dadesValors, color, esBold, esSubfila = false, idParent = null) {
 				const tr = document.createElement("tr");
 				if (idParent) {
 					tr.className = `subfila-${idParent}`;
 					tr.style.display = "none";
-					tr.style.backgroundColor = "#fcfcfc"; // Color més clar per distingir l'interior
+					tr.style.backgroundColor = "#fcfcfc"; 
 				}
 
 				const tdNom = document.createElement("td");
@@ -787,7 +838,6 @@
 					const valor = dadesValors[p] || 0;
 					const td = document.createElement("td");
 					
-					// Si és subfila i no té valor en aquell període, ho deixem buit perquè quedi més net
 					if (valor !== 0 || !esSubfila) { 
 						const span = document.createElement("span");
 						span.className = "valor-numeric";
@@ -804,14 +854,22 @@
 
 			// --- 4. DIBUIX DE LES FILES ---
 
-			// Fila 1: Saldo Inicial
-			const trSaldoInic = crearFila("SALDO INICIAL", saldosInicials, "#000", true);
+			// Fila 1: Saldo Inicial (ARA DESPLEGABLE)
+			const trSaldoInic = crearFila('<span class="toggle-icon" style="display:inline-block; width:15px;">▶</span> Saldo inicial', saldosInicials, "#000", true);
 			trSaldoInic.style.backgroundColor = "#eee";
+			trSaldoInic.style.cursor = "pointer";
+			trSaldoInic.onclick = () => toggleSubfiles("saldo-inic", trSaldoInic);
 			tbody.appendChild(trSaldoInic);
 
+			// Detalls Saldo Inicial
+			arrayBancs.forEach(banc => {
+				tbody.appendChild(crearFila("└ " + banc, saldosInicialsBancs[banc], "#000", false, true, "saldo-inic"));
+			});
+
 			// Fila 2: Entrades (Desplegable)
-			const trEntrades = crearFila('<span class="toggle-icon" style="display:inline-block; width:15px;">▶</span> ENTRADES (+)', flux.entrades.totals, "#006600", true);
+			const trEntrades = crearFila('<span class="toggle-icon" style="display:inline-block; width:15px;">▶</span> Entrades (+)', flux.entrades.totals, "#006600", true);
 			trEntrades.style.cursor = "pointer";
+			trEntrades.style.backgroundColor = "#eee"; 
 			trEntrades.onclick = () => toggleSubfiles("entrades", trEntrades);
 			tbody.appendChild(trEntrades);
 
@@ -822,8 +880,9 @@
 			});
 
 			// Fila 3: Sortides (Desplegable)
-			const trSortides = crearFila('<span class="toggle-icon" style="display:inline-block; width:15px;">▶</span> SORTIDES (-)', flux.sortides.totals, "#cc0000", true);
+			const trSortides = crearFila('<span class="toggle-icon" style="display:inline-block; width:15px;">▶</span> Sortides (-)', flux.sortides.totals, "#cc0000", true);
 			trSortides.style.cursor = "pointer";
+			trSortides.style.backgroundColor = "#eee"; 
 			trSortides.onclick = () => toggleSubfiles("sortides", trSortides);
 			tbody.appendChild(trSortides);
 
@@ -834,18 +893,27 @@
 			});
 
 			// Fila 4: Flux Net del període
-			const trFluxNet = crearFila("FLUX NET DEL PERÍODE", fluxNet, "#000", false);
-			trFluxNet.style.borderTop = "1px dashed #999";
+			const trFluxNet = crearFila("Flux net del període", fluxNet, "#000", false);
+			trFluxNet.style.borderTop = "2px solid #666";
+			trFluxNet.style.fontStyle = "italic";
+			trFluxNet.style.backgroundColor = "#fff";
 			tbody.appendChild(trFluxNet);
 
-			// Fila 5: Saldo Final
-			const trSaldoFinal = crearFila("SALDO FINAL", saldosFinals, "#000", true);
+			// Fila 5: Saldo Final (ARA DESPLEGABLE)
+			const trSaldoFinal = crearFila('<span class="toggle-icon" style="display:inline-block; width:15px;">▶</span> Saldo final', saldosFinals, "#000", true);
 			trSaldoFinal.style.borderTop = "2px solid #666";
 			trSaldoFinal.style.backgroundColor = "#eee";
+			trSaldoFinal.style.cursor = "pointer";
+			trSaldoFinal.onclick = () => toggleSubfiles("saldo-final", trSaldoFinal);
 			tbody.appendChild(trSaldoFinal);
 
+			// Detalls Saldo Final
+			arrayBancs.forEach(banc => {
+				tbody.appendChild(crearFila("└ " + banc, saldosFinalsBancs[banc], "#000", false, true, "saldo-final"));
+			});
+
 			taulaFlux.appendChild(tbody);
-			
+
 			// --- 5. PREPAREM DADES PEL GRÀFIC ---
 			window.dadesGrafic = {
 				labels: periodesSorted.map(p => {
@@ -865,7 +933,6 @@
 
 						const formatData = (d) => String(d.getDate()).padStart(2, '0') + '/' + String(d.getMonth() + 1).padStart(2, '0');
 						
-						// Retornem un array per fer que Chart.js ho pinti en dues línies
 						return [`Setmana ${setmana}`, `${formatData(iniciSetmana)} - ${formatData(fiSetmana)}` ];
 					}
 				}),
@@ -874,7 +941,6 @@
 				saldos: periodesSorted.map(p => saldosFinals[p] || 0)
 			};
 			
-			// Si el gràfic ja està obert, l'actualitzem automàticament
 			if (document.getElementById("grafic-container").style.display === "block") {
 				dibuixarGraficFlux();
 			}
@@ -911,18 +977,24 @@
 					let rs = row.cells[j].rowSpan || 1;
 					let cs = row.cells[j].colSpan || 1;
 					
-					// Omplim la matriu ocupant tots els espais
 					for (let r = 0; r < rs; r++) {
 						for (let c = 0; c < cs; c++) {
 							if (i + r < numRows && colOffset + c < numCols) {
-								if (r === 0 && c === 0) {
+								
+								// TRUC: Si estem a la primera fila de la taula (i === 0) i la cel·la ocupa
+								// diverses files (rs > 1), forcem que el text es posi a sota (r === rs - 1).
+								// Si no, el posem a la primera casella per defecte (r === 0).
+								let posicioTextR = (i === 0 && rs > 1) ? rs - 1 : 0;
+								
+								if (r === posicioTextR && c === 0) {
 									matrix[i + r][colOffset + c] = '"' + cellText + '"'; // Dada real
 								} else {
-									matrix[i + r][colOffset + c] = '""'; // Cel·la "fantasma" ocupada per la fusió
+									matrix[i + r][colOffset + c] = '""'; // Cel·la "fantasma"
 								}
 							}
 						}
 					}
+					
 					colOffset += cs; // Avancem el punter
 				}
 			}
@@ -1008,7 +1080,7 @@
 					labels: window.dadesGrafic.labels,
 					datasets: [
 						{
-							label: 'Evolució Saldo Final',
+							label: 'Saldo Final',
 							type: 'line',
 							data: window.dadesGrafic.saldos,
 							borderColor: '#0055ff', // Línia Blava
@@ -1155,7 +1227,7 @@
         <div style="padding-bottom: 5px; padding-right: 10px; display: flex; flex-direction: column; align-items: flex-end; gap: 6px;">
             <div style="font-size: 10px; text-align: right; line-height: 1.2;">
                 Creat per David Vidal Viladoms + Gemini<br>
-                Versió 260402
+                Versió 260403
             </div>
             <div style="display: flex; align-items: center; gap: 10px; white-space: nowrap;">
                 <label for="format-global" style="margin: 0; font-weight: bold; white-space: nowrap;">Format numèric:</label>
