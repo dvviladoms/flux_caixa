@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Simulador de Flux de Caixa</title>
+    <title>Flux de Caixa</title>
     
 	<link rel="icon" type="image/x-icon" href="favicon_eines.ico">
     <link rel="stylesheet" href="https://pyscript.net/releases/2024.1.1/core.css">
@@ -276,14 +276,20 @@
 					const tip = fila[idxTip] ? fila[idxTip].toString().toLowerCase().trim() : "";
                     const dataOriginal = fila[idxData];
 
-                    // --- NOU: FILTRE DE PASSAT ---
-                    // Si trobem un moviment (que no sigui saldo inicial) i és anterior a la data base, l'amaguem!
+                    // --- FILTRE DE VISIBILITAT (PASSAT I FUTUR) ---
                     let mostraOriginal = true;
-                    if (trobatSaldo && tip !== 'saldo inicial' && dataOriginal instanceof Date) {
+                    if (tip !== 'saldo inicial' && dataOriginal instanceof Date) {
                         let dataNeta = new Date(dataOriginal.getTime());
                         dataNeta.setHours(0,0,0,0);
-                        if (dataNeta < dataBaseSaldos) {
-                            mostraOriginal = false; // L'amaguem perquè ja està integrat al saldo inicial
+                        
+                        // 1. Amaguem si és anterior al Saldo Inicial (perquè ja està sumat allà)
+                        if (trobatSaldo && dataNeta < dataBaseSaldos) {
+                            mostraOriginal = false; 
+                        }
+                        
+                        // 2. Amaguem si és Puntual i és posterior a la data límit (dataHoritzo)
+                        if (tip === 'puntual' && dataNeta > dataHoritzo) {
+                            mostraOriginal = false;
                         }
                     }
 
@@ -607,6 +613,11 @@
 		window.addEventListener('load', function() {
             // Amaguem la rodeta
             document.getElementById('loading-overlay').style.display = 'none';
+            const anyActual = new Date().getFullYear();
+            document.getElementById('data-fi-projeccio').value = `${anyActual}-12-31`;
+
+            // Activem els sensors del Drop Zone
+            // ... (la resta continua igual)
 
             // Activem els sensors del Drop Zone
             const dropZone = document.getElementById('drop-zone');
@@ -1200,7 +1211,9 @@
         .table-wrapper { overflow-x: auto; border: 2px solid; border-color: #666 #fff #fff #666; margin-top: 10px; max-height: 400px;}
         table.data-table { width: 100%; border-collapse: collapse; background: #fff; border: none; }
         .data-table th, .data-table td { border: 1px solid #ccc; padding: 6px; text-align: left; }
-        .data-table th { background-color: #ddd; font-weight: bold; border-bottom: 2px solid #999; border-right: 1px solid #999; position: sticky; top: 0;}
+		.data-table th { background-color: #ddd; font-weight: bold; border-bottom: 2px solid #999; border-right: 1px solid #999; position: sticky; z-index: 2; }
+		.data-table thead tr:nth-child(1) th { top: 0; z-index: 3; }
+		.data-table thead tr:nth-child(2) th { top: 28px; }
 
         #loading-overlay { position: fixed; top: 0; left: 0; width: 100%; height: 100%; background-color: rgba(204, 204, 204, 0.95); z-index: 9999; display: flex; flex-direction: column; justify-content: center; align-items: center; text-align: center; }
         .spinner { border: 8px solid #fff; border-top: 8px solid #666; border-radius: 50%; width: 60px; height: 60px; animation: spin 1s linear infinite; margin-bottom: 20px; }
@@ -1274,14 +1287,14 @@
                     <div id="controls-recurrencia" style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 15px; background: #f9f9f9; padding: 10px; border: 1px dotted #999;">
 						<div style="display: flex; gap: 20px; align-items: center;">
 							<label style="margin: 0; display: flex; align-items: center; gap: 5px; cursor: pointer;">
-								<input type="checkbox" id="chk-recurrents" checked onchange="recalcularDades()" style="width: auto; margin: 0;">
+								<input type="checkbox" id="chk-recurrents" onchange="recalcularDades()" style="width: auto; margin: 0;">
 								Identifica recurrents
 							</label>
 
 							<div style="display: flex; align-items: center; gap: 10px; border-left: 1px solid #ccc; padding-left: 15px;">
 								<label style="margin: 0; display: flex; align-items: center; gap: 5px; cursor: pointer;">
 									<input type="checkbox" id="chk-projecta" checked onchange="recalcularDades()" style="width: auto; margin: 0;">
-									Projecta recurrència fins:
+									Projecta tresoreria fins:
 								</label>
 								<input type="date" id="data-fi-projeccio" onchange="recalcularDades()" style="width: auto; text-align: center;">
 							</div>
