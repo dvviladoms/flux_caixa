@@ -11,6 +11,7 @@
     
     <script src="https://cdn.sheetjs.com/xlsx-0.20.2/package/dist/xlsx.full.min.js"></script>
 	<script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+	<script src="https://cdn.jsdelivr.net/npm/chartjs-plugin-datalabels@2"></script>
 
     <script>
         function switchTab(tabId, btnElement) {
@@ -398,16 +399,32 @@
             const idxComentaris = headersOriginals.findIndex(h => h && h.toString().toLowerCase().trim() === 'comentaris (privat)');
             const idxRecurrencia = headersOriginals.findIndex(h => h && (h.toString().toLowerCase().trim() === 'recurrència' || h.toString().toLowerCase().trim() === 'recurrencia'));
 			
-			const columnesEstandard = [];
+            let teComentaris = false;
+            const idxComentarisOrig = headersOriginals.findIndex(h => h && h.toString().toLowerCase().trim() === 'comentaris');
+            if (idxComentarisOrig !== -1) {
+                for (let i = 1; i < dataOriginal.length; i++) {
+                    if (dataOriginal[i][idxComentarisOrig] && dataOriginal[i][idxComentarisOrig].toString().trim() !== "") {
+                        teComentaris = true;
+                        break;
+                    }
+                }
+            }
+
+            const columnesEstandard = [];
             const columnesPermeses = ['data', 'concepte', 'comentaris']; 
-				for (let j = 0; j < headersOriginals.length; j++) {
-					if (headersOriginals[j] && headersOriginals[j].toString().trim() !== "") {
-						const nomColumna = headersOriginals[j].toString().toLowerCase().trim();
-						if (columnesPermeses.includes(nomColumna)) {
-							columnesEstandard.push({ nom: headersOriginals[j], index: j });
-						}
-					}
-				}
+            
+            for (let j = 0; j < headersOriginals.length; j++) {
+                if (headersOriginals[j] && headersOriginals[j].toString().trim() !== "") {
+                    const nomColumna = headersOriginals[j].toString().toLowerCase().trim();
+                    
+                    if (columnesPermeses.includes(nomColumna)) {
+                        // NOU: Si estem avaluant la columna 'comentaris' i hem vist que no en té cap, la saltem!
+                        if (nomColumna === 'comentaris' && !teComentaris) continue;
+                        
+                        columnesEstandard.push({ nom: headersOriginals[j], index: j });
+                    }
+                }
+            }
 
             const crearCella = (valor, esSaldo = false) => {
                 const td = document.createElement("td");
@@ -1077,13 +1094,17 @@
 				return;
 			}
 
+			// Registrem el plugin d'etiquetes (només cal fer-ho una vegada)
+			Chart.register(ChartDataLabels);
+
 			document.getElementById("grafic-container").style.display = "block";
 			const ctx = document.getElementById("canvas-flux").getContext("2d");
 
-			// Destruïm el gràfic anterior si n'hi ha un per no encavalcar-los
 			if (chartFluxInstance) {
 				chartFluxInstance.destroy(); 
 			}
+
+			const formatActiu = document.getElementById('format-global').value;
 
 			chartFluxInstance = new Chart(ctx, {
 				type: 'bar',
@@ -1091,84 +1112,118 @@
 					labels: window.dadesGrafic.labels,
 					datasets: [
 						{
-							label: 'Saldo Final',
+							label: 'Evolució Saldo Final',
 							type: 'line',
 							data: window.dadesGrafic.saldos,
-							borderColor: '#0055ff', // Línia Blava
+							borderColor: '#0055ff',
 							backgroundColor: '#0055ff',
-							borderWidth: 2,
+							borderWidth: 3,
 							fill: false,
 							yAxisID: 'y-saldo',
 							tension: 0.1,
-							order: 1 // Força que la línia es dibuixi per sobre de les barres
+							order: 1,
+							// Configuració etiqueta línia
+							datalabels: {
+								align: 'top',
+								anchor: 'end',
+								color: '#0055ff',
+								offset: 8
+							}
 						},
 						{
 							label: 'Entrades (+)',
 							type: 'bar',
 							data: window.dadesGrafic.entrades,
-							backgroundColor: '#006600', // Barres Verdes
+							backgroundColor: '#99cc99', // <--- Verd més clar/pastel
 							yAxisID: 'y-flux',
-							order: 2
+							order: 2,
+							datalabels: {
+								align: 'top',
+								anchor: 'end',
+								color: '#004400' // Text verd fosc per garantir la lectura
+							}
 						},
 						{
 							label: 'Sortides (-)',
 							type: 'bar',
 							data: window.dadesGrafic.sortides,
-							backgroundColor: '#cc0000', // Barres Vermelles
+							backgroundColor: '#ff9999', // <--- Vermell més clar/pastel
 							yAxisID: 'y-flux',
-							order: 3
+							order: 3,
+							datalabels: {
+								align: 'bottom',
+								anchor: 'start',
+								color: '#880000' // Text vermell fosc per garantir la lectura
+							}
 						}
 					]
 				},
 				options: {
 					responsive: true,
-					interaction: {
-						mode: 'index',
-						intersect: false,
+					layout: {
+						padding: { top: 30, bottom: 30 } // Espai extra per les etiquetes
 					},
 					plugins: {
+						datalabels: {
+							// Formatem el número que apareix dins del gràfic
+							formatter: (value) => {
+								if (value === 0) return ''; // No mostrem zeros
+								return formatarNumeroGlobal(value, formatActiu);
+							},
+							font: { weight: 'bold', size: 10 },
+							clip: false // Perquè no talli les etiquetes a les vores
+						},
 						tooltip: {
-							callbacks: {
-								label: function(context) {
-									let label = context.dataset.label || '';
-									if (label) label += ': ';
-									if (context.parsed.y !== null) {
-										// Mostrem el tooltip formatat com a moneda
-										label += new Intl.NumberFormat('ca-ES', { style: 'currency', currency: 'EUR' }).format(context.parsed.y);
-									}
-									return label;
-								}
-							}
+							mode: 'index',
+							intersect: false
 						}
 					},
 					scales: {
 						x: {
-							stacked: true, // <--- Afegeix això perquè s'apilin a l'eix X
-							ticks: {
-								maxRotation: 0,
-								autoSkip: true,
-								font: { size: 10 }
-							}
-						},
-						'y-flux': {
-							type: 'linear',
-							position: 'left',
-							stacked: true, // <--- Afegeix això perquè s'apilin a l'eix Y de les barres
-							title: { display: true, text: 'Volum (Entrades / Sortides)' }
+							stacked: true,
+							ticks: { maxRotation: 0, font: { size: 10 } }
 						},
 						'y-saldo': {
 							type: 'linear',
+							position: 'left',
+							beginAtZero: false,
+							grace: '80%', // Manté la línia molt centrada
+							title: { display: true, text: 'Saldo final acumulat' }
+						},
+						'y-flux': {
+							type: 'linear',
 							position: 'right',
-							stacked: false, // La línia del saldo NO s'ha d'apilar
-							title: { display: true, text: 'Saldo Final acumulat' },
+							stacked: true,
+							title: { display: true, text: 'Volum (Entrades / Sortides)' },
 							grid: { drawOnChartArea: false }
 						}
 					}
 				}
 			});
 			
-			// Fem scroll suau cap al gràfic automàticament
 			document.getElementById("grafic-container").scrollIntoView({ behavior: 'smooth', block: 'end' });
+		}
+		
+		function descarregarGraficJPG() {
+			const canvas = document.getElementById("canvas-flux");
+			if (!chartFluxInstance) {
+				alert("Primer has de dibuixar el gràfic per poder descarregar-lo!");
+				return;
+			}
+			
+			const tempCanvas = document.createElement("canvas");
+			tempCanvas.width = canvas.width;
+			tempCanvas.height = canvas.height;
+			const ctx = tempCanvas.getContext("2d");
+			
+			ctx.fillStyle = "#ffffff";
+			ctx.fillRect(0, 0, tempCanvas.width, tempCanvas.height);
+			ctx.drawImage(canvas, 0, 0);
+			
+			const link = document.createElement("a");
+			link.download = "grafic_flux_caixa.jpg";
+			link.href = tempCanvas.toDataURL("image/jpeg", 1.0);
+			link.click();
 		}
 
     </script>
@@ -1211,9 +1266,37 @@
         .table-wrapper { overflow-x: auto; border: 2px solid; border-color: #666 #fff #fff #666; margin-top: 10px; max-height: 400px;}
         table.data-table { width: 100%; border-collapse: collapse; background: #fff; border: none; }
         .data-table th, .data-table td { border: 1px solid #ccc; padding: 6px; text-align: left; }
-		.data-table th { background-color: #ddd; font-weight: bold; border-bottom: 2px solid #999; border-right: 1px solid #999; position: sticky; z-index: 2; }
-		.data-table thead tr:nth-child(1) th { top: 0; z-index: 3; }
-		.data-table thead tr:nth-child(2) th { top: 28px; }
+		.data-table th { 
+			background-color: #ddd; 
+			font-weight: bold; 
+			position: sticky; 
+			z-index: 2; 
+			/* Eliminem el border clàssic per evitar l'error visual a l'scroll */
+			border: none; 
+			/* Ho substituïm per una ombra forta (1px dreta, 2px a sota) del mateix color gris (#999) */
+			box-shadow: inset -1px 0 0 #999, inset 0 -2px 0 #999; 
+		}
+		.data-table thead tr:nth-child(1) th { 
+			top: 0; 
+			z-index: 3;
+			height: 35px;
+			box-sizing: border-box;
+			box-shadow: inset -1px 0 0 #999, inset 0 -2px 0 #999;
+		}
+		.data-table thead tr:nth-child(2) th { 
+			top: 35px;
+			box-shadow: inset -1px 0 0 #999, inset 0 -2px 0 #999;
+		}
+		.data-table thead tr:nth-child(2) th::before {
+			content: "";
+			position: absolute;
+			top: -3px;
+			left: 0;
+			right: 0;
+			height: 3px;
+			background-color: #ddd;
+			z-index: -1;
+		}
 
         #loading-overlay { position: fixed; top: 0; left: 0; width: 100%; height: 100%; background-color: rgba(204, 204, 204, 0.95); z-index: 9999; display: flex; flex-direction: column; justify-content: center; align-items: center; text-align: center; }
         .spinner { border: 8px solid #fff; border-top: 8px solid #666; border-radius: 50%; width: 60px; height: 60px; animation: spin 1s linear infinite; margin-bottom: 20px; }
@@ -1300,7 +1383,7 @@
 							</div>
 						</div>
 						
-						<button class="btn-secondary" onclick="exportarCSVTresoreria()">Baixa la previsió (.csv)</button>
+						<button class="btn-secondary" onclick="exportarCSVTresoreria()">Baixa en format .csv</button>
 					</div>
 					<div class="table-wrapper">
                         <table id="taula-dades" class="data-table"></table>
@@ -1320,16 +1403,22 @@
 						<input type="checkbox" id="chk-mensual" onchange="generarMatriuFlux()"> 
 						Agrupa mensualment (per defecte: setmanal)
 					</label>
-					<button class="btn-secondary" onclick="exportarCSVFlux()">Baixa el flux (.csv)</button>
+					<button class="btn-secondary" onclick="exportarCSVFlux()">Baixa en format .csv</button>
 				</div>
 				<div class="table-wrapper">
 					<table id="taula-flux" class="data-table"></table>
 				</div>
-				<div style="margin-top: 20px; border-top: 2px groove #fff; padding-top: 15px; text-align: center;">
+				<div style="margin-top: 20px; padding-top: 5px; position: relative; display: flex; align-items: center; justify-content: center;">
 					<button class="btn-main" 
 							onclick="dibuixarGraficFlux()" 
-							style="height: 45px; padding: 0 30px; width: auto; font-size: 14px;">
+							style="height: 40px; "padding: 0 30px;">
 						Dibuixa gràfic del flux de caixa
+					</button>
+					
+					<button class="btn-secondary" 
+							onclick="descarregarGraficJPG()" 
+							style="position: absolute; right: 0; margin: 0;">
+						Baixa en format .jpg
 					</button>
 				</div>
 				<div id="grafic-container" style="display: none; margin-top: 15px; background: #fff; border: 2px solid #666; padding: 10px;">
