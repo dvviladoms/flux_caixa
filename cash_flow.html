@@ -133,7 +133,7 @@
 								}
 							}
 
-							if (tipologia === 'recurrent') {
+							if (tipologia === 'recurrent' || tipologia === 'previsió' || tipologia === 'previsio') {
 								if (idxRec === -1) {
 									if (!errorsValidacio.includes("Falta la columna 'Recurrència' i hi ha moviments recurrents.")) {
 										errorsValidacio.push("Falta la columna 'Recurrència' i hi ha moviments recurrents.");
@@ -249,7 +249,7 @@
 						const tip = fila[idxTip] ? fila[idxTip].toString().toLowerCase().trim() : "";
 						const dataOriginal = fila[idxData];
 						
-						if (tip === 'puntual' && dataOriginal instanceof Date) {
+						if ((tip === 'puntual' || tip === 'real') && dataOriginal instanceof Date) {
 							if (!maximaDataPuntual || dataOriginal > maximaDataPuntual) {
 								maximaDataPuntual = new Date(dataOriginal.getTime());
 							}
@@ -289,7 +289,7 @@
                         }
                         
                         // 2. Amaguem si és Puntual i és posterior a la data límit (dataHoritzo)
-                        if (tip === 'puntual' && dataNeta > dataHoritzo) {
+                        if (dataNeta > dataHoritzo) {
                             mostraOriginal = false;
                         }
                     }
@@ -304,7 +304,7 @@
                     }
 					
                     // --- 3. PROJECTEM RECURRÈNCIES (fins i tot les de les files amagades del passat!) ---
-					if (tip === 'recurrent' && projeccioActiva && dataOriginal instanceof Date) {
+					if ((tip === 'recurrent' || tip === 'previsió' || tip === 'previsio') && projeccioActiva && dataOriginal instanceof Date) {
 						
 						// NOU: Llegim la "Fi recurrència" si existeix i és una data vàlida
 						let limitRecurrencia = null;
@@ -1323,7 +1323,7 @@
         <div style="padding-bottom: 5px; padding-right: 10px; display: flex; flex-direction: column; align-items: flex-end; gap: 6px;">
             <div style="font-size: 10px; text-align: right; line-height: 1.2;">
                 Creat per David Vidal Viladoms + Gemini<br>
-                Versió 260403
+                Versió 260404
             </div>
             <div style="display: flex; align-items: center; gap: 10px; white-space: nowrap;">
                 <label for="format-global" style="margin: 0; font-weight: bold; white-space: nowrap;">Format numèric:</label>
