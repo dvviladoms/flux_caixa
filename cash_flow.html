@@ -99,6 +99,42 @@
                 const dataArray = XLSX.utils.sheet_to_json(worksheet, { header: 1, defval: "" });
 
 				if (dataArray && dataArray.length > 0) {
+				
+				// --- INICI BLOC SANEJAMENT MÀGIC ---
+				const headersNeteja = dataArray[0];
+				
+				// 1. Arreglem columnes duplicades (ens quedem amb l'última que contingui dades)
+				for (let j = 0; j < headersNeteja.length; j++) {
+					if (headersNeteja[j]) {
+						let esDuplicat = false;
+						for (let k = j + 1; k < headersNeteja.length; k++) {
+							if (headersNeteja[k] && headersNeteja[j].toString().toLowerCase().trim() === headersNeteja[k].toString().toLowerCase().trim()) {
+								esDuplicat = true; break;
+							}
+						}
+						if (esDuplicat) headersNeteja[j] = "Columna_Duplicada_ignorada";
+					}
+				}
+
+				// 2. Forcem que les dates en format text es converteixin a Data real
+				const idxDataNeteja = headersNeteja.findIndex(h => h && h.toString().toLowerCase().trim() === 'data');
+				if (idxDataNeteja !== -1) {
+					for (let i = 1; i < dataArray.length; i++) {
+						let cellVal = dataArray[i][idxDataNeteja];
+						if (typeof cellVal === 'string') {
+							const parts = cellVal.match(/^(\d{1,2})[\/\-](\d{1,2})[\/\-](\d{2,4})$/);
+							if (parts) {
+								let dia = parseInt(parts[1], 10);
+								let mes = parseInt(parts[2], 10) - 1; // En JavaScript el gener és el mes 0
+								let any = parseInt(parts[3], 10);
+								if (any < 100) any += 2000; // Converteix '26' en '2026'
+								
+								dataArray[i][idxDataNeteja] = new Date(any, mes, dia);
+							}
+						}
+					}
+				}
+				// --- FI DEL BLOC SANEJAMENT MÀGIC ---
 					
 					// --- INICI VALIDACIONS ---
 					const headers = dataArray[0];
@@ -466,12 +502,16 @@
 
             if (idxBanc !== -1 && idxImport !== -1) {
                 const bancsUnics = new Set();
-                for (let i = 1; i < dataOriginal.length; i++) {
-                    const fila = dataOriginal[i];
-                    if (fila.every(cell => cell === "" || cell === undefined)) continue;
-                    const nomBanc = fila[idxBanc];
-                    if (nomBanc) bancsUnics.add(nomBanc.toString().trim());
-                }
+				for (let i = 1; i < dataOriginal.length; i++) {
+					const fila = dataOriginal[i];
+					if (fila.every(cell => cell === "" || cell === undefined)) continue;
+					const nomBanc = fila[idxBanc];
+					if (nomBanc && nomBanc.toString().trim() !== "") {
+						bancsUnics.add(nomBanc.toString().trim());
+					} else {
+						bancsUnics.add("Sense banc assignat");
+					}
+				}
                 const arrayBancs = Array.from(bancsUnics).sort();
 
                 const trTop = document.createElement("tr");
@@ -535,14 +575,69 @@
                         importNum = parseFloat(textVal) || 0;
                     }
 
-                    if (tipologia === 'saldo inicial') {
-                        if (bancActual && saldosInicials[bancActual] !== undefined) {
-                            saldosInicials[bancActual] += importNum;
-                        }
-                    } else {
-                        filesNormals.push({ fila, bancActual, importNum });
-                    }
+                    const bancDefinitiu = bancActual !== "" ? bancActual : "Sense banc assignat";
+
+					if (tipologia === 'saldo inicial') {
+						if (saldosInicials[bancDefinitiu] !== undefined) {
+							saldosInicials[bancDefinitiu] += importNum;
+						} else {
+							saldosInicials[bancDefinitiu] = importNum;
+						}
+					} else {
+						filesNormals.push({ fila, bancActual: bancDefinitiu, importNum });
+					}
                 }
+
+				// --- INICI BLOC AGRUPACIÓ TRASPASSOS ---
+				let filesAgrupades = [];
+				let indexosAExcloure = new Set();
+
+				for (let i = 0; i < filesNormals.length; i++) {
+					if (indexosAExcloure.has(i)) continue;
+
+					let m1 = filesNormals[i];
+					let matchIndex = -1;
+
+					// Busquem la possible parella de traspàs en els moviments següents
+					for (let j = i + 1; j < filesNormals.length; j++) {
+						if (indexosAExcloure.has(j)) continue;
+
+						let m2 = filesNormals[j];
+						
+						let importOposat = Math.abs(m1.importNum + m2.importNum) < 0.01 && m1.importNum !== 0;
+						let bancDiferent = m1.bancActual !== m2.bancActual;
+						let margeDies = (m1.fila[idxData] instanceof Date && m2.fila[idxData] instanceof Date) ? 
+										Math.abs(m1.fila[idxData].getTime() - m2.fila[idxData].getTime()) <= (3 * 24 * 60 * 60 * 1000) : false;
+
+						if (importOposat && bancDiferent && margeDies) {
+							matchIndex = j;
+							break;
+						}
+					}
+
+					if (matchIndex !== -1) {
+						let m2 = filesNormals[matchIndex];
+						indexosAExcloure.add(matchIndex);
+						
+						// Creem l'objecte combinat amb el concepte i la data del primer moviment trobat
+						filesAgrupades.push({
+							fila: m1.fila,
+							movimentsBancs: {
+								[m1.bancActual]: m1.importNum,
+								[m2.bancActual]: m2.importNum
+							}
+						});
+					} else {
+						// Si no té parella, es queda com un moviment únic
+						filesAgrupades.push({
+							fila: m1.fila,
+							movimentsBancs: {
+								[m1.bancActual]: m1.importNum
+							}
+						});
+					}
+				}
+				// --- FI BLOC AGRUPACIÓ TRASPASSOS ---
 
                 let saldos = { ...saldosInicials };
                 let globalInicial = 0;
@@ -570,34 +665,39 @@
                 trInicial.appendChild(tdGlobalInic);
                 tbody.appendChild(trInicial);
 
-                for (const item of filesNormals) {
-                    const { fila, bancActual, importNum } = item;
-                    const tr = document.createElement("tr");
+                for (const item of filesAgrupades) {
+					const { fila, movimentsBancs } = item;
+					const tr = document.createElement("tr");
 
-                    columnesEstandard.forEach(col => {
-                        tr.appendChild(crearCella(fila[col.index]));
-                    });
+					// Dibuixa la informació estàndard (Data, Concepte...)
+					columnesEstandard.forEach(col => {
+						tr.appendChild(crearCella(fila[col.index]));
+					});
 
-                    let sumaGlobal = 0;
-                    arrayBancs.forEach(banc => {
-                        if (banc === bancActual) {
-                            saldos[banc] += importNum;
-                            tr.appendChild(crearCella(importNum));
-                        } else {
-                            tr.appendChild(crearCella(""));
-                        }
-                        tr.appendChild(crearCella(saldos[banc], true));
-                        sumaGlobal += saldos[banc];
-                    });
+					let sumaGlobal = 0;
+					arrayBancs.forEach(banc => {
+						// Mirem si hi ha algun import en aquest banc concret (ja sigui d'un moviment normal o de la parella)
+						let importNum = movimentsBancs[banc];
+						
+						if (importNum !== undefined) {
+							saldos[banc] += importNum;
+							tr.appendChild(crearCella(importNum));
+						} else {
+							tr.appendChild(crearCella(""));
+						}
+						tr.appendChild(crearCella(saldos[banc], true));
+						sumaGlobal += saldos[banc];
+					});
 
-                    const tdGlobal = crearCella(sumaGlobal, true);
-                    tdGlobal.style.borderLeft = "2px solid #666";
-                    tdGlobal.style.fontWeight = "bold";
-                    tr.appendChild(tdGlobal);
+					// Dibuixa el saldo global combinat al final de la línia
+					const tdGlobal = crearCella(sumaGlobal, true);
+					tdGlobal.style.borderLeft = "2px solid #666";
+					tdGlobal.style.fontWeight = "bold";
+					tr.appendChild(tdGlobal);
 
-                    tbody.appendChild(tr);
-                    filesValides++;
-                }
+					tbody.appendChild(tr);
+					filesValides++;
+				}
 
             } else {
                 // --- ESTRATÈGIA NORMAL (Amagant columnes de la mateixa manera) ---
@@ -1323,7 +1423,7 @@
         <div style="padding-bottom: 5px; padding-right: 10px; display: flex; flex-direction: column; align-items: flex-end; gap: 6px;">
             <div style="font-size: 10px; text-align: right; line-height: 1.2;">
                 Creat per David Vidal Viladoms + Gemini<br>
-                Versió 260404
+                Versió 260408
             </div>
             <div style="display: flex; align-items: center; gap: 10px; white-space: nowrap;">
                 <label for="format-global" style="margin: 0; font-weight: bold; white-space: nowrap;">Format numèric:</label>
@@ -1366,7 +1466,7 @@
                 <h1>Simulador de Tresoreria</h1>
 
                 <div id="resultats-box" class="res-sepia">
-                    <h3 style="margin-top:0; border-bottom: 1px dotted #999; padding-bottom: 5px;">Previsió de tresoreria</h3>
+                    <h3 style="margin-top:0; border-bottom: 1px dotted #999; padding-bottom: 5px;">Previsió de Tresoreria</h3>
                     <div id="controls-recurrencia" style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 15px; background: #f9f9f9; padding: 10px; border: 1px dotted #999;">
 						<div style="display: flex; gap: 20px; align-items: center;">
 							<label style="margin: 0; display: flex; align-items: center; gap: 5px; cursor: pointer;">
